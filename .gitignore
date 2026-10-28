@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+local.json
+profiles/
+creations/
+registry/
+backups/
+outbox/
+processing-runs/
+.runtime/
