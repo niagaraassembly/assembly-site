@@ -1,0 +1,41 @@
+:root{--bg:#f6f7f9;--card:#fff;--ink:#16202a;--mute:#5b6773;--line:#dfe3e8;--acc:#1d5fd1;--acc-ink:#fff;--ok:#1a7f4b;--warn:#a85d00;--bad:#b3261e;--code:#eef1f5}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1317;--card:#171d23;--ink:#e6ebf0;--mute:#98a4b0;--line:#27303a;--acc:#6aa2ff;--acc-ink:#0b1220;--ok:#4cc38a;--warn:#e0a24a;--bad:#ff8a80;--code:#10161c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+a{color:var(--acc)}
+.top{display:flex;gap:24px;align-items:center;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:2}
+.brand{font-size:18px;text-decoration:none;color:var(--ink)}
+nav{display:flex;gap:4px}nav a{padding:6px 12px;border-radius:6px;text-decoration:none;color:var(--mute)}
+nav a.on{background:var(--acc);color:var(--acc-ink)}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:0 0 10px}
+.muted{color:var(--mute)}.small{font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:0 0 16px}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.pipe{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 20px}
+.pipe a{flex:1 1 120px;text-decoration:none;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.pipe b{display:block;font-size:24px}.pipe span{color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.row{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}
+.row:first-of-type{border-top:0}.row .t{min-width:0}.row .t div{overflow:hidden;text-overflow:ellipsis}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;border:1px solid var(--line);color:var(--mute);white-space:nowrap}
+.pill.dispatched,.pill.running{color:var(--acc);border-color:var(--acc)}.pill.answered{color:var(--ok);border-color:var(--ok)}
+.pill.failed{color:var(--bad);border-color:var(--bad)}.pill.awaiting-confirmation{color:var(--warn);border-color:var(--warn)}
+button,.btn{font:inherit;padding:6px 14px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;text-decoration:none;display:inline-block}
+button.primary{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}button.danger{color:var(--bad);border-color:var(--bad)}
+button:disabled{opacity:.5;cursor:not-allowed}
+label{display:block;font-weight:600;margin:12px 0 3px}label .req{color:var(--bad)}
+input,select,textarea{width:100%;font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink)}
+input[type=checkbox]{width:auto}textarea{min-height:70px}
+.hint{font-weight:400;color:var(--mute);font-size:13px}
+pre{background:var(--code);padding:10px 12px;border-radius:8px;overflow:auto;font-size:12.5px;white-space:pre-wrap;word-break:break-word}
+.err{color:var(--bad);margin:8px 0}.err li{margin:2px 0}
+.note{border-left:3px solid var(--warn);padding:6px 10px;background:var(--code);border-radius:4px;margin:10px 0}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center}
+.tl{list-style:none;padding:0;margin:0}.tl li{padding:6px 0 6px 12px;border-left:2px solid var(--line)}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px}.kv dt{color:var(--mute)}.kv dd{margin:0;word-break:break-word}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}.tabs button.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 16px;border-radius:8px;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.show{opacity:1}
+@media (max-width:560px){.top{flex-wrap:wrap;gap:8px}.kv{grid-template-columns:1fr}}
+label.inline{margin:0;font-weight:400}
+#panel{margin-top:16px}.actions+.grid,#panel+.grid{margin-top:16px}
