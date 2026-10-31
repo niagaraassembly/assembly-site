@@ -8,6 +8,7 @@ site, not authentication.
 import datetime
 import json
 import os
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -83,6 +84,41 @@ class Notes:
         return self._append({"op": "flag", "target": target, "actor": _actor(actor), "on": bool(on),
                              "reason": _text(reason)[:300]})
 
+    def resolve(self, comment_id: str, actor: str, on: bool) -> Dict[str, Any]:
+        c = [e for e in self._events() if e["op"] == "comment" and e["id"] == comment_id]
+        if not c:
+            raise NoteError("resolve: no such comment")
+        if c[0].get("parent"):
+            raise NoteError("resolve: only the first comment of a thread can be resolved")
+        return self._append({"op": "resolve", "target": c[0]["target"], "actor": _actor(actor), "ref": comment_id, "on": bool(on)})
+
+    def seen(self, actor: str) -> Dict[str, Any]:
+        """Mark everything up to now as read for this actor (mentions)."""
+        return self._append({"op": "seen", "target": "@seen", "actor": _actor(actor)})
+
+    _MENTION = re.compile(r"(?<![\w@])@([A-Za-z0-9._-]{1,40})")
+
+    def _mentions(self, actor: str):
+        """Mentions of actor as (event_index, mention). Event order, not clock time, decides what is unread."""
+        me = _actor(actor).lower()
+        evs = self._events()
+        retracted = {e.get("ref") for e in evs if e["op"] == "retract"}
+        out = []
+        for i, e in enumerate(evs):
+            if e["op"] != "comment" or e["id"] in retracted or e["actor"].lower() == me:
+                continue
+            if any(m.rstrip(".-_").lower() == me for m in self._MENTION.findall(e["text"])):
+                out.append((i, {"id": e["id"], "target": e["target"], "actor": e["actor"], "at": e["at"], "text": e["text"]}))
+        return out
+
+    def mentions_for(self, actor: str) -> List[Dict[str, Any]]:
+        return [m for _, m in self._mentions(actor)]
+
+    def unread_mentions(self, actor: str) -> List[Dict[str, Any]]:
+        me = _actor(actor)
+        last = max((i for i, e in enumerate(self._events()) if e["op"] == "seen" and e["actor"] == me), default=-1)
+        return [m for i, m in self._mentions(actor) if i > last]
+
     def hold(self, target: str, actor: str, on: bool, reason: str = "") -> Dict[str, Any]:
         """Hold a record back from dispatch. Site-level guard; the Assembly record is not changed."""
         return self._append({"op": "hold", "target": target, "actor": _actor(actor), "on": bool(on), "reason": _text(reason)[:300]})
@@ -107,10 +143,12 @@ class Notes:
                 continue
             if e["op"] == "comment":
                 comments[e["id"]] = {"id": e["id"], "actor": e["actor"], "at": e["at"], "text": e["text"],
-                                     "parent": e.get("parent"), "retracted": False}
+                                     "parent": e.get("parent"), "retracted": False, "resolved": False, "resolved_by": None}
                 order.append(e["id"])
             elif e["op"] == "retract" and e.get("ref") in comments:
                 comments[e["ref"]].update(retracted=True, text=None)
+            elif e["op"] == "resolve" and e.get("ref") in comments:
+                comments[e["ref"]].update(resolved=bool(e.get("on")), resolved_by=e["actor"] if e.get("on") else None)
             elif e["op"] == "star":
                 stars[e["actor"]] = bool(e.get("on"))
             elif e["op"] == "flag":
@@ -140,7 +178,7 @@ class Notes:
         out = []
         for e in reversed(evs):
             row = dict(e)
-            if e["op"] == "retract":
+            if e["op"] in ("retract", "seen", "resolve"):
                 continue
             if e["op"] == "comment" and any(r["op"] == "retract" and r.get("ref") == e["id"] for r in evs):
                 row["text"] = None

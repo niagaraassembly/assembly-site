@@ -75,14 +75,19 @@ class Service:
                 "sensitivity": f.get("sensitivity"), "creation": c["state"] if c else None,
                 "last": rec["history"][-1] if rec["history"] else None}
 
-    def records(self, kind: Optional[str] = None, status: Optional[str] = None, starred: bool = False) -> List[Dict[str, Any]]:
+    def records(self, kind: Optional[str] = None, status: Optional[str] = None, starred: bool = False, q: Optional[str] = None) -> List[Dict[str, Any]]:
         rows = []
         idx = self.notes_store.index()
         for k in KINDS.values():
             if kind and k.name != kind:
                 continue
             for id in records.list_ids(self.root, k.name):
-                r = self._row(records.load(self.root, id, KINDS))
+                rec = records.load(self.root, id, KINDS)
+                if q:
+                    hay = " ".join([rec["id"], rec["kind"], rec["status"]] + [" ".join(map(str, v)) if isinstance(v, list) else str(v) for v in rec["fields"].values()]).lower()
+                    if q.lower() not in hay:
+                        continue
+                r = self._row(rec)
                 n = idx.get(id, {})
                 r.update(starred=n.get("starred", False), flagged=n.get("flagged", False), notes=n.get("comments", 0))
                 rows.append(r)
@@ -401,10 +406,12 @@ class Service:
                 if target.startswith("stage:"):
                     raise SiteError(["hold: only records can be held"])
                 self.notes_store.hold(target, actor, bool(body.get("on", True)), body.get("reason", ""))
+            elif op == "resolve":
+                self.notes_store.resolve(str(body.get("id", "")), actor, bool(body.get("on", True)))
             elif op == "retract":
                 self.notes_store.retract(str(body.get("id", "")), actor)
             else:
-                raise SiteError(["op: must be comment, star, flag, hold or retract"])
+                raise SiteError(["op: must be comment, star, flag, hold, resolve or retract"])
         except NoteError as e:
             raise SiteError([str(e)])
         return self.notes(target)
@@ -557,9 +564,9 @@ class Service:
 
     # ---- inbox: everything that wants the operator, most pressing first
     AGING_DAYS = 3
-    _INBOX_ORDER = {"review": 0, "failed": 1, "partial": 2, "aging": 3, "flagged": 4}
+    _INBOX_ORDER = {"review": 0, "failed": 1, "mention": 2, "partial": 3, "aging": 4, "flagged": 5}
 
-    def inbox(self) -> Dict[str, Any]:
+    def inbox(self, actor: Optional[str] = None) -> Dict[str, Any]:
         items: List[Dict[str, Any]] = []
         now = datetime.datetime.now().astimezone()
         idx = self.notes_store.index()
@@ -586,6 +593,12 @@ class Service:
                     v = self.notes_store.view(target)
                     items.append({"kind": "flagged", "id": target, "title": title, "route": targetroute(target),
                                   "detail": "Flagged by %s: %s" % (v["flag"]["actor"], v["flag"]["reason"] or "(no reason)"), "at": v["flag"]["at"]})
+        if actor:
+            for m in self.notes_store.unread_mentions(actor):
+                title = self._target_title(m["target"])
+                if title is not None:
+                    items.append({"kind": "mention", "id": m["target"], "title": title, "route": targetroute(m["target"]), "at": m["at"],
+                                  "detail": "%s mentioned you: %s" % (m["actor"], " ".join(m["text"].split())[:120])})
         items.sort(key=lambda i: (self._INBOX_ORDER[i["kind"]], i["at"]))
         return {"items": items, "count": len(items)}
 
@@ -675,3 +688,50 @@ class Service:
             out.append({"on": d.isoformat(), "weekday": d.strftime("%a"), "period": p["period"],
                         "bundles": [{"key_id": b["key_id"], "part": b["part"], "of": b["of"], "key": b["key"], "questions": len(b["members"])} for b in p["bundles"]]})
         return {"start": start.isoformat(), "days": out}
+
+    def mark_seen(self, actor: str) -> Dict[str, Any]:
+        self.notes_store.seen(actor)
+        return self.inbox(actor)
+
+    # ---- records list: search, sort, paging, CSV; and a global timeline
+    SORTS = {"created": "created", "id": "id", "status": "status", "kind": "kind", "title": "title"}
+
+    def records_page(self, kind=None, status=None, starred=False, q=None, sort="created", order="desc", page=1, per=25) -> Dict[str, Any]:
+        if sort not in self.SORTS:
+            raise SiteError(["sort: one of %s" % ", ".join(self.SORTS)])
+        rows = self.records(kind, status, starred, q)
+        rows.sort(key=lambda r: (str(r[sort]).lower(), r["id"]), reverse=(order != "asc"))
+        per = max(1, min(int(per), 100))
+        pages = max(1, -(-len(rows) // per))
+        page = max(1, min(int(page), pages))
+        return {"rows": rows[(page - 1) * per: page * per], "total": len(rows), "page": page, "pages": pages, "per": per}
+
+    _CSV_COLS = ["id", "kind", "status", "rev", "created", "title", "lens", "intake", "trust", "sensitivity", "due", "creation"]
+
+    def records_csv(self, kind=None, status=None, starred=False, q=None) -> str:
+        import csv
+        import io
+
+        def safe(v):
+            v = "" if v is None else str(v)
+            return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v      # a spreadsheet must not run record text as a formula
+
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(self._CSV_COLS)
+        for r in self.records(kind, status, starred, q):
+            w.writerow([safe(r.get(c)) for c in self._CSV_COLS])
+        return buf.getvalue()
+
+    def timeline(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        evs = []
+        for k in KINDS:
+            for id in records.list_ids(self.root, k):
+                rec = records.load(self.root, id, KINDS)
+                title = self._row(rec)["title"]
+                for e in rec["history"]:
+                    evs.append({"at": e["at"], "id": id, "kind": k, "title": title, "event": e["event"], "detail": e.get("detail", "")})
+        evs.sort(key=lambda e: e["at"])
+        evs.reverse()
+        limit = max(1, min(int(limit), 200))
+        return {"events": evs[offset: offset + limit], "total": len(evs), "offset": offset, "limit": limit}

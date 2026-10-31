@@ -45,7 +45,7 @@ class HttpTest(unittest.TestCase):
     def test_capture_preview_apply_dispatch_flow(self):
         code, prev = self.call("/api/captures", {"kind": "question", "fields": Q})
         self.assertEqual(code, 200)
-        self.assertEqual(self.call("/api/records")[1], [])           # preview mints nothing
+        self.assertEqual(self.call("/api/records")[1]["rows"], [])           # preview mints nothing
         code, made = self.call("/api/captures", {"kind": "question", "fields": Q, "apply": True})
         self.assertEqual(code, 201)
         id = made["record"]["id"]

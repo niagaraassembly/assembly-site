@@ -49,6 +49,16 @@ def make_handler(svc: Service):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_csv(self, text: str):
+            body = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="assembly-records.csv"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
         def _json(self, code: int, obj: Any):
             self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
@@ -69,9 +79,14 @@ def make_handler(svc: Service):
                 if u.path == "/api/kinds":
                     return self._json(200, svc.kinds())
                 if u.path == "/api/records":
-                    return self._json(200, svc.records(q.get("kind"), q.get("status"), q.get("starred") == "1"))
+                    return self._json(200, svc.records_page(q.get("kind"), q.get("status"), q.get("starred") == "1", q.get("q"),
+                                                            q.get("sort", "created"), q.get("order", "desc"), int(q.get("page", "1") or 1), int(q.get("per", "25") or 25)))
+                if u.path == "/api/records.csv":
+                    return self._send_csv(svc.records_csv(q.get("kind"), q.get("status"), q.get("starred") == "1", q.get("q")))
+                if u.path == "/api/timeline":
+                    return self._json(200, svc.timeline(int(q.get("limit", "50") or 50), int(q.get("offset", "0") or 0)))
                 if u.path == "/api/inbox":
-                    return self._json(200, svc.inbox())
+                    return self._json(200, svc.inbox(q.get("actor")))
                 if u.path == "/api/health":
                     return self._json(200, svc.health())
                 m = re.fullmatch(r"/api/records/" + _ID + r"/result", u.path)
@@ -142,6 +157,8 @@ def make_handler(svc: Service):
                     return self._json(200, svc.preview_new(kind, values))
                 if p == "/api/handback":
                     return self._json(200, svc.handback(bool(body.get("apply"))))
+                if p == "/api/inbox/seen":
+                    return self._json(200, svc.mark_seen(str(body.get("actor", ""))))
                 if p == "/api/backups":
                     return self._json(201, svc.backup())
                 m = re.fullmatch(r"/api/backups/([0-9-]+)/verify", p)

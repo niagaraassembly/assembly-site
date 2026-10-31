@@ -197,7 +197,7 @@ function bundleCard(b, on, expanded) {
 // ---------- schema-driven form
 async function linkOptions(kind) {
   const out = {};
-  for (const f of kind.fields) if (f.type === "link" && f.editable !== false) out[f.name] = await api("/api/records?kind=" + f.target);
+  for (const f of kind.fields) if (f.type === "link" && f.editable !== false) out[f.name] = (await api("/api/records?per=100&kind=" + f.target)).rows;
   return out;
 }
 
@@ -289,20 +289,32 @@ async function viewNew(params) {
       h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => run(false) }, "Preview"))), out);
 }
 
-// ---------- records list
+// ---------- records list: search, filter, sort, page, export
 async function viewRecords(params) {
   const q = new URLSearchParams();
-  for (const k of ["kind", "status", "starred"]) if (params.get(k)) q.set(k, params.get(k));
-  const [rows, ks] = await Promise.all([api("/api/records?" + q), kinds()]);
-  const sel = (name, opts) => h("select", { onchange: (e) => { const p = new URLSearchParams(params); e.target.value ? p.set(name, e.target.value) : p.delete(name); location.hash = "#/records?" + p; } },
-    h("option", { value: "" }, "all " + name + "s"), opts.map((o) => h("option", { value: o, selected: params.get(name) === o }, o)));
+  for (const k of ["kind", "status", "starred", "q", "sort", "order", "page"]) if (params.get(k)) q.set(k, params.get(k));
+  const [d, ks] = await Promise.all([api("/api/records?" + q), kinds()]);
+  const go = (patch) => { const p = new URLSearchParams(params); for (const [k, v] of Object.entries(patch)) v ? p.set(k, v) : p.delete(k); if (!("page" in patch)) p.delete("page"); location.hash = "#/records?" + p; };
+  const sel = (name, label, opts) => h("select", { "aria-label": label, onchange: (e) => go({ [name]: e.target.value }) },
+    h("option", { value: "" }, "all " + label), opts.map((o) => h("option", { value: o, selected: params.get(name) === o }, o)));
+  const search = h("input", { type: "search", id: "search", placeholder: "Search id, text or any field (press /)", value: params.get("q") || "" });
+  search.addEventListener("keydown", (e) => { if (e.key === "Enter") go({ q: search.value.trim() }); });
+  const sort = params.get("sort") || "created", order = params.get("order") || "desc";
+  const csvq = new URLSearchParams(q); csvq.delete("page");
   show(h("h1", {}, "Records"),
-    h("div", { class: "actions" }, sel("kind", ks.map((k) => k.name)), sel("status", Object.keys(LABEL)),
-      h("button", { class: params.get("starred") ? "on" : "", onclick: () => { const p = new URLSearchParams(params); params.get("starred") ? p.delete("starred") : p.set("starred", "1"); location.hash = "#/records?" + p; } }, "\u2605 starred only")),
-    h("div", { class: "card" }, rows.length ? rows.map((r) => h("div", { class: "row" },
+    h("div", { class: "actions" }, search, h("button", { onclick: () => go({ q: search.value.trim() }) }, "Search")),
+    h("div", { class: "actions" }, sel("kind", "kinds", ks.map((k) => k.name)), sel("status", "statuses", Object.keys(LABEL)),
+      h("select", { "aria-label": "sort", onchange: (e) => go({ sort: e.target.value }) }, ["created", "id", "status", "kind", "title"].map((o) => h("option", { value: o, selected: sort === o }, "sort: " + o))),
+      h("button", { onclick: () => go({ order: order === "asc" ? "desc" : "asc" }) }, order === "asc" ? "\u2191 oldest/A first" : "\u2193 newest/Z first"),
+      h("button", { class: params.get("starred") ? "on" : "", onclick: () => go({ starred: params.get("starred") ? "" : "1" }) }, "\u2605 starred only"),
+      h("a", { class: "btn", href: "/api/records.csv?" + csvq, download: "assembly-records.csv" }, "Export CSV")),
+    h("p", { class: "small muted" }, d.total + " record" + (d.total === 1 ? "" : "s") + (params.get("q") ? " matching \u201c" + params.get("q") + "\u201d" : "")),
+    h("div", { class: "card" }, d.rows.length ? d.rows.map((r) => h("div", { class: "row" },
       h("div", { class: "t" }, h("a", { href: "#/r/" + r.id }, r.id), " ", pill(r.status), r.creation === "draft" ? h("span", { class: "pill" }, "draft") : null, " ", marks(r),
         h("div", { class: "small muted" }, r.title || "(untitled)")),
-      h("span", { class: "small muted" }, when(r.created)))) : h("p", { class: "muted" }, "No records.")));
+      h("span", { class: "small muted" }, when(r.created)))) : h("p", { class: "muted" }, "No records.")),
+    d.pages > 1 ? h("div", { class: "actions" }, h("button", { disabled: d.page <= 1, onclick: () => go({ page: String(d.page - 1) }) }, "\u2190 Previous"),
+      h("span", { class: "small" }, "Page " + d.page + " of " + d.pages), h("button", { disabled: d.page >= d.pages, onclick: () => go({ page: String(d.page + 1) }) }, "Next \u2192")) : null);
 }
 
 // ---------- record detail
@@ -410,10 +422,11 @@ async function viewRecord(id, mode) {
 }
 
 // ---------- inbox and health
-const KIND_LABEL = { review: "Review", failed: "Failed", partial: "Resume", aging: "Aging", flagged: "Flagged" };
+const KIND_LABEL = { mention: "Mentioned you", review: "Review", failed: "Failed", partial: "Resume", aging: "Aging", flagged: "Flagged" };
 async function viewInbox() {
-  const d = await api("/api/inbox");
+  const d = await api("/api/inbox?actor=" + encodeURIComponent(actorName()));
   show(h("h1", {}, "Inbox"), h("p", { class: "muted" }, "Everything that wants you, most pressing first: finished runs to confirm, failures, partial creations, dispatches with no change for days, and flagged items."),
+    d.items.some((i) => i.kind === "mention") ? h("div", { class: "actions" }, h("button", { onclick: async () => { await api("/api/inbox/seen", { actor: actorName() }); viewInbox(); refreshBadge(); } }, "Mark mentions of @" + actorName() + " as read")) : h("p", { class: "small muted" }, "Mention someone in a comment with @name (no spaces). Mentions of you show here."),
     h("section", { class: "card" }, d.items.length ? d.items.map((i) => h("div", { class: "row" },
       h("div", { class: "t" }, h("span", { class: "sev " + i.kind }), h("b", {}, KIND_LABEL[i.kind]), " ", h("a", { href: i.route }, i.id), h("div", { class: "small" }, i.title), h("div", { class: "small muted" }, i.detail)),
       h("a", { class: "btn" + (i.kind === "review" ? " primary" : ""), href: i.route }, "Open"))) : h("p", { class: "muted" }, "Inbox is clear.")));
@@ -432,7 +445,7 @@ async function viewHealth() {
 }
 
 async function refreshBadge() {
-  try { const d = await api("/api/inbox"); const b = $("#badge"); b.textContent = d.count; b.hidden = !d.count; } catch (e) { /* offline */ }
+  try { const d = await api("/api/inbox?actor=" + encodeURIComponent(actorName())); const b = $("#badge"); b.textContent = d.count; b.hidden = !d.count; } catch (e) { /* offline */ }
 }
 
 // ---------- router
@@ -449,7 +462,7 @@ async function route() {
     if (path === "/") await viewMap();
     else if (path === "/dispatch") await viewDispatch();
     else if (path === "/bundles") await viewBundles(params);
-    else if (path === "/activity") await viewActivity();
+    else if (path === "/activity") await viewActivity(params);
     else if (path === "/inbox") await viewInbox();
     else if (path === "/health") await viewHealth();
     else if ((m = path.match(/^\/stage\/([a-z0-9]+)$/))) await viewStage(m[1]);
@@ -496,11 +509,15 @@ function notesPanel(target, hint) {
     const node = (c) => {
       const reply = h("div", { class: "kids" });
       const replyBtn = h("button", { class: "mini", onclick: () => { reply.prepend(form(c.id, h("button", { class: "mini", onclick: () => render(v) }, "Cancel"))); replyBtn.disabled = true; } }, "Reply");
-      return h("div", { class: "cm" + (c.retracted ? " gone" : "") },
+      const body = [
         h("div", { class: "meta" }, h("b", {}, c.actor), " ", when(c.at)),
         h("div", { class: "txt" }, c.retracted ? "(retracted by author)" : c.text),
-        h("div", { class: "actions" }, c.retracted ? null : replyBtn, !c.retracted && c.actor === me ? h("button", { class: "mini", onclick: () => act({ op: "retract", id: c.id }) }, "Retract") : null),
-        reply, (byParent[c.id] || []).map(node));
+        h("div", { class: "actions" }, c.retracted ? null : replyBtn, !c.retracted && c.actor === me ? h("button", { class: "mini", onclick: () => act({ op: "retract", id: c.id }) }, "Retract") : null,
+          !c.parent ? h("button", { class: "mini", onclick: () => act({ op: "resolve", id: c.id, on: !c.resolved }) }, c.resolved ? "Reopen thread" : "Resolve thread") : null),
+        reply, (byParent[c.id] || []).map(node)];
+      return c.resolved && !c.parent
+        ? h("details", { class: "cm resolved" }, h("summary", {}, "Resolved by " + c.resolved_by + " \u00b7 " + (c.retracted ? "(retracted)" : c.text.slice(0, 60))), body)
+        : h("div", { class: "cm" + (c.retracted ? " gone" : "") }, body);
     };
     const flagBtn = v.flag
       ? h("button", { class: "mini on", onclick: () => act({ op: "flag", on: false }) }, "\u2691 Clear flag")
@@ -563,10 +580,27 @@ async function viewStage(key) {
     })));
 }
 
-async function viewActivity() {
+async function viewTimeline(params) {
+  const off = parseInt(params.get("offset") || "0", 10);
+  const d = await api("/api/timeline?limit=50&offset=" + off);
+  const to = (o) => { const p = new URLSearchParams(params); p.set("offset", String(Math.max(0, o))); location.hash = "#/activity?" + p; };
+  show(h("h1", {}, "Activity"), activityTabs("timeline"),
+    h("p", { class: "muted" }, "Every change to every record, newest first: created, dispatched, handed back, confirmed, edited."),
+    h("section", { class: "card feed" }, d.events.map((e) => h("div", { class: "row" },
+      h("div", { class: "t" }, h("a", { href: "#/r/" + e.id }, e.id), " ", h("b", {}, e.event), h("div", { class: "small muted" }, e.title.slice(0, 80) + (e.detail ? " \u2014 " + e.detail : ""))),
+      h("span", { class: "small muted" }, when(e.at))))),
+    h("div", { class: "actions" }, h("button", { disabled: off <= 0, onclick: () => to(off - d.limit) }, "\u2190 Newer"), h("span", { class: "small" }, (off + 1) + "\u2013" + Math.min(off + d.limit, d.total) + " of " + d.total),
+      h("button", { disabled: off + d.limit >= d.total, onclick: () => to(off + d.limit) }, "Older \u2192")));
+}
+
+const activityTabs = (cur) => h("div", { class: "tabs" }, h("button", { class: cur === "notes" ? "on" : "", onclick: () => (location.hash = "#/activity") }, "Comments, stars and flags"),
+  h("button", { class: cur === "timeline" ? "on" : "", onclick: () => (location.hash = "#/activity?view=timeline") }, "Record timeline"));
+
+async function viewActivity(params) {
+  if (params && params.get("view") === "timeline") return viewTimeline(params);
   const d = await api("/api/activity?limit=100");
   const verb = (e) => ({ comment: "commented", star: e.on ? "starred" : "unstarred", flag: e.on ? "flagged" : "cleared flag on" })[e.op] || e.op;
-  show(h("h1", {}, "Activity"), h("p", { class: "muted" }, "Comments, stars and flags across records and stages. They are notes about the work and do not change any record."),
+  show(h("h1", {}, "Activity"), activityTabs("notes"), h("p", { class: "muted" }, "Comments, stars and flags across records and stages. They are notes about the work and do not change any record."),
     h("div", { class: "two" },
       h("section", { class: "card feed" }, h("h2", {}, "Recent"), d.activity.length ? d.activity.map((e) => h("div", { class: "row" },
         h("div", { class: "t" }, h("b", {}, e.actor), " " + verb(e) + " ", h("a", { href: targetHref(e.target) }, e.title),
