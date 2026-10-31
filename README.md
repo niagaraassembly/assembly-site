@@ -36,6 +36,20 @@ machine-flows), `ASSEMBLY_RUNS` (machine-flows run records, read-only).
   "dispatched" only means a task document exists until a machine-flows run record says otherwise.
 - **Records**: filter by kind/status; detail with fields, history, creation steps; edit metadata (preview diff, then save, bumping `rev`), retire, confirm a finished run.
 
+## Also in the site
+
+- **Inbox**: finished runs, failures, partial creations, dispatches idle 3+ days, flagged items and `@mentions` of you (badge in the nav).
+  Result before confirming: a record awaiting confirmation shows the latest machine-flows run's files, read-only.
+- **Health**: the core's lint results and checksummed backups (records, creations, ID counters, notes) with verify.
+- **Capture**: grouped fields, link pickers, duplicate warnings (advisory), and atomic bulk capture (all lines valid or nothing is minted).
+- **Dispatch safety**: diff against the earlier task document on re-dispatch; hold a question back (a site-level guard, record unchanged);
+  a failed outbox write is reported as an error and the draft can be resumed.
+- **Bundles**: week schedule, per-bundle history, "Fix" links for blocked questions, opt-in update check on the workbench.
+- **Records**: search, sort, paging, CSV export (formula-safe), record timeline. **Notes**: resolve threads, `@name` mentions, unread.
+- **Keyboard**: `g` then `m d b n r i a h` to go, `/` to search, `?` for help. Phone layout turns tables into cards.
+
+Browser test: `tests/e2e` runs when Node and Playwright are installed (skipped otherwise).
+
 ## Safety
 
 Binds to 127.0.0.1 only; rejects non-local `Host` headers; writes need a JSON content type and `X-Assembly-Site` header; strict CSP and

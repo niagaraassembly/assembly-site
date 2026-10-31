@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<a class="skip" href="#app">Skip to content</a>
 <header class="top">
   <a class="brand" href="#/">Assembly <b>Dispatch</b></a>
   <nav id="nav">
@@ -21,8 +22,9 @@
   </nav>
   <label class="actor" title="Name shown on your comments, stars and flags. A label, not a login.">You <input id="actor" maxlength="40" placeholder="owner"></label>
 </header>
-<main id="app" aria-live="polite"><p class="muted">Loading…</p></main>
+<main id="app" tabindex="-1"><p class="muted">Loading…</p></main>
 <div id="toast" role="status"></div>
+<div id="help" hidden role="dialog" aria-label="Keyboard shortcuts"></div>
 <noscript><p>This site needs JavaScript.</p></noscript>
 <script type="module" src="/app.js"></script>
 </body>

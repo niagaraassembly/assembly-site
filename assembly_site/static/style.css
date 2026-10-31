@@ -104,3 +104,21 @@ pre.diff span.add{background:rgba(26,127,75,.18);display:block}pre.diff span.del
 .cm.resolved{border-left-color:var(--ok);padding:4px 0 4px 10px}.cm.resolved>summary{cursor:pointer;color:var(--mute);font-size:13px}
 .sev.mention{background:var(--acc)}
 input[type=search]{flex:1 1 260px}
+
+.skip{position:absolute;left:-999px;top:0;background:var(--acc);color:var(--acc-ink);padding:8px 12px;z-index:5}.skip:focus{left:8px;top:8px}
+main:focus{outline:none}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[role=link]:focus-visible,summary:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.chip.link{cursor:pointer}.chip.link:hover{border-color:var(--acc)}
+.sub.here{background:var(--code);border-radius:8px;padding-left:10px;padding-right:10px}
+#help{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:9}#help[hidden]{display:none}#help .card{min-width:280px;margin:0}
+@media (max-width:640px){
+  .tw table,.tw tbody,.tw tr,.tw td{display:block;width:100%}.tw thead{display:none}
+  .tw tr{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:0 0 10px;background:var(--card)}
+  .tw td{border:0;padding:3px 0;display:flex;gap:10px;align-items:flex-start}.tw td:before{content:attr(data-label);flex:0 0 92px;font-size:12px;color:var(--mute)}
+  td.qt{min-width:0}.steps li{flex:1 1 45%}
+}
+@media (max-width:760px){
+  .top{flex-wrap:wrap;gap:6px 12px;padding:8px 12px}
+  #nav{flex-wrap:wrap;width:100%;order:3}#nav a{padding:5px 9px}
+  .top .actor{margin-left:auto}
+}

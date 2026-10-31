@@ -179,10 +179,10 @@ function bundleCard(b, on, expanded) {
   const rows = b.members.map((m) => {
     const cb = h("input", { type: "checkbox", checked: m.readiness === "ready", disabled: m.readiness !== "ready", "aria-label": "include " + m.id });
     cb.addEventListener("change", () => { cb.checked ? picks.add(m.id) : picks.delete(m.id); renderBar(); });
-    return h("tr", {}, h("td", {}, cb), h("td", {}, h("a", { href: "#/r/" + m.id }, m.id)), h("td", { class: "qt" }, m.title || "(untitled)", h("div", { class: "small muted" }, m.why)),
-      h("td", {}, readyPill(m.readiness), m.needs_approval && m.readiness === "ready" ? h("span", { class: "chip partial", title: "The run will wait for your approval" }, "approval needed") : null),
-      h("td", {}, pill(m.status)), h("td", {}, h("span", { class: "chip " + (m.due ? "built" : "") }, m.due ? "due" : "not due"), " ", marks(m)),
-      h("td", {}, m.readiness === "blocked" ? h("a", { class: "btn mini", href: "#/r/" + m.id + "/edit" }, "Fix") : null,
+    return h("tr", {}, h("td", { "data-label": "Include" }, cb), h("td", { "data-label": "Question" }, h("a", { href: "#/r/" + m.id }, m.id)), h("td", { class: "qt", "data-label": "What it says" }, h("div", {}, m.title || "(untitled)", h("div", { class: "small muted" }, m.why))),
+      h("td", { "data-label": "Can I act?" }, readyPill(m.readiness), m.needs_approval && m.readiness === "ready" ? h("span", { class: "chip partial", title: "The run will wait for your approval" }, "approval needed") : null),
+      h("td", { "data-label": "Status" }, pill(m.status)), h("td", { "data-label": "Schedule" }, h("span", { class: "chip " + (m.due ? "built" : "") }, m.due ? "due" : "not due"), " ", marks(m)),
+      h("td", { "data-label": "Actions" }, m.readiness === "blocked" ? h("a", { class: "btn mini", href: "#/r/" + m.id + "/edit" }, "Fix") : null,
         m.readiness === "ready" ? h("button", { class: "mini", onclick: () => holdIt(m.id, true) }, "Hold") : null,
         m.readiness === "held" ? h("button", { class: "mini", onclick: () => holdIt(m.id, false) }, "Release") : null));
   });
@@ -465,7 +465,7 @@ async function route() {
     else if (path === "/activity") await viewActivity(params);
     else if (path === "/inbox") await viewInbox();
     else if (path === "/health") await viewHealth();
-    else if ((m = path.match(/^\/stage\/([a-z0-9]+)$/))) await viewStage(m[1]);
+    else if ((m = path.match(/^\/stage\/([a-z0-9]+)(?:\/([a-z0-9]+))?$/))) await viewStage(m[1], m[2]);
     else if (path === "/new") await viewNew(params);
     else if (path === "/records") await viewRecords(params);
     else if ((m = path.match(/^\/r\/([A-Z]+-\d{4,})(?:\/(dispatch|edit))?$/))) await viewRecord(m[1], m[2]);
@@ -544,7 +544,10 @@ const bucketHref = (b) => "#/records?kind=" + b.kind + (b.statuses.length === 1 
 async function viewMap() {
   const { stages, gates } = await api("/api/stages");
   const groups = [...new Set(stages.map((s) => s.group))];
+  const subs = stages.flatMap((s) => s.substages), n = (st) => subs.filter((u) => u.state === st).length;
   show(h("h1", {}, "Assembly map"),
+    h("div", { class: "stats" }, h("div", { class: "stat ok" }, h("b", {}, String(n("built"))), h("span", {}, "substages built")), h("div", { class: "stat warn" }, h("b", {}, String(n("partial"))), h("span", {}, "partial (v0 only)")),
+      h("div", { class: "stat" }, h("b", {}, String(n("unbuilt"))), h("span", {}, "not built")), h("div", { class: "stat" }, h("b", {}, String(gates.reduce((t, g) => t + g.pending, 0))), h("span", {}, "waiting at gates"))),
     h("p", { class: "muted" }, "Every stage and substage of the flow, from the Dispatch briefing. State is probed from the core: a stage the core cannot do yet is shown as not built and offers no actions. Counts are the site's reading of v0 record statuses."),
     h("section", { class: "card" }, h("h2", {}, "Human gates"),
       gates.map((g) => h("div", { class: "row" },
@@ -556,12 +559,14 @@ async function viewMap() {
         h("a", { class: "scard " + s.state + " " + s.key, href: "#/stage/" + s.key },
           h("h3", {}, s.title, statePill(s.state), " ", marks({ starred: s.starred, flagged: s.flagged, notes: s.notes })),
           h("div", { class: "small muted" }, s.summary),
-          h("div", { class: "subs" }, s.substages.map((u) => h("span", { class: "chip " + u.state, title: u.reason || u.summary },
+          h("div", { class: "subs" }, s.substages.map((u) => h("span", { class: "chip link " + u.state, role: "link", tabindex: "0", title: u.reason || u.summary,
+            onclick: (e) => { e.preventDefault(); e.stopPropagation(); location.hash = "#/stage/" + s.key + "/" + u.key; },
+            onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); location.hash = "#/stage/" + s.key + "/" + u.key; } } },
             u.title, u.buckets.length ? [" ", h("b", {}, String(u.buckets.reduce((n, b) => n + b.count, 0)))] : null, u.gate ? " \u25C6" : "")))))) ])),
     h("p", { class: "small muted" }, "\u25C6 marks a named human gate. Dashed means not built in the core yet."));
 }
 
-async function viewStage(key) {
+async function viewStage(key, subKey) {
   const s = await api("/api/stages/" + key);
   show(h("p", { class: "small" }, h("a", { href: "#/" }, "\u2190 Map")),
     h("h1", {}, s.title, " ", statePill(s.state), " ", starButton(s.target, s.starred)),
@@ -569,7 +574,7 @@ async function viewStage(key) {
     h("section", { class: "card" }, h("h2", {}, "Notes on this stage"), notesPanel(s.target)),
     h("section", { class: "card" }, s.substages.map((u) => {
       const panel = h("div", {});
-      return h("div", { class: "sub", id: "sub-" + u.key },
+      return h("div", { class: "sub" + (u.key === subKey ? " here" : ""), id: "sub-" + u.key },
         h("h3", {}, u.title, statePill(u.state), u.gate ? h("span", { class: "gate" }, "\u25C6 gate: " + u.gate) : null, starButton(u.target, u.starred), marks({ flagged: u.flagged, notes: u.notes })),
         h("p", { class: "small muted" }, u.summary),
         u.reason ? h("p", { class: "note small" }, u.reason + " You can still comment, star or flag it; that records a request and starts no work.") : null,
@@ -578,6 +583,7 @@ async function viewStage(key) {
         h("div", { class: "actions" }, h("button", { class: "mini", onclick: (e) => { if (panel.firstChild) { panel.replaceChildren(); e.target.textContent = "Notes" + (u.notes ? " (" + u.notes + ")" : ""); } else { panel.append(notesPanel(u.target)); e.target.textContent = "Hide notes"; } } }, "Notes" + (u.notes ? " (" + u.notes + ")" : ""))),
         panel);
     })));
+  if (subKey) { const el = document.getElementById("sub-" + subKey); if (el) el.scrollIntoView({ block: "center" }); }
 }
 
 async function viewTimeline(params) {
@@ -611,6 +617,27 @@ async function viewActivity(params) {
         h("div", { class: "t" }, h("a", { href: targetHref(x.target) }, x.title), " ", marks({ flagged: x.flagged, notes: x.comments }))))
         : h("p", { class: "muted" }, "Nothing starred."))));
 }
+
+// ---------- keyboard: g then a letter to go, / to search, ? for help
+const GO = { m: ["#/", "Map"], d: ["#/dispatch", "Dispatch"], b: ["#/bundles", "Bundles"], n: ["#/new", "Capture"], r: ["#/records", "Records"], i: ["#/inbox", "Inbox"], a: ["#/activity", "Activity"], h: ["#/health", "Health"] };
+let gPending = false, gTimer;
+function showHelp(on) {
+  const el = $("#help");
+  if (!on) { el.hidden = true; return; }
+  el.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Keyboard shortcuts"), h("dl", { class: "kv" },
+    Object.entries(GO).flatMap(([k, [, name]]) => [h("dt", {}, "g " + k), h("dd", {}, name)]).concat([h("dt", {}, "/"), h("dd", {}, "Search records"), h("dt", {}, "?"), h("dd", {}, "This help"), h("dt", {}, "Esc"), h("dd", {}, "Close")])),
+    h("div", { class: "actions" }, h("button", { onclick: () => showHelp(false) }, "Close"))));
+  el.hidden = false;
+}
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape") return showHelp(false);
+  const t = e.target, typing = t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "?") { e.preventDefault(); return showHelp($("#help").hidden); }
+  if (e.key === "/") { e.preventDefault(); const s = $("#search"); if (s) s.focus(); else { location.hash = "#/records"; setTimeout(() => $("#search") && $("#search").focus(), 300); } return; }
+  if (gPending) { gPending = false; clearTimeout(gTimer); const g = GO[e.key]; if (g) { e.preventDefault(); location.hash = g[0]; } return; }
+  if (e.key === "g") { gPending = true; gTimer = setTimeout(() => (gPending = false), 1200); }
+});
 
 try { $("#actor").value = localStorage.getItem("as-actor") || ""; } catch (e) { /* no storage */ }
 $("#actor").addEventListener("change", (e) => { try { localStorage.setItem("as-actor", e.target.value.trim().slice(0, 40)); } catch (x) { /* ignore */ } });
