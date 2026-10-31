@@ -15,12 +15,13 @@ import re
 
 from . import core, stages as stagelib
 from .notes import NoteError, Notes
+import copy
 import datetime
 import hashlib
 import shutil
 
 from .core import lint as lint_mod
-from .core import actions, KINDS, bundle as bundlelib, change, create, handback, handoff, records
+from .core import ids, actions, KINDS, bundle as bundlelib, change, create, handback, handoff, records
 
 # Fields the site never lets a person edit directly (provenance and links managed by actions).
 EDIT_LOCKED = {"supersedes"}
@@ -42,6 +43,7 @@ class Service:
         self.root = Path(root)
         self.data = Path(data or os.environ.get("ASSEMBLY_SITE_DATA") or self.root.parent / "site-data").expanduser()
         self.notes_store = Notes(self.data / "annotations.jsonl")
+        self._rc: Dict[Path, Any] = {}          # profile path -> ((mtime_ns, size), parsed record); invalidated by file stat
         self.outbox = Path(outbox or os.environ.get("ASSEMBLY_OUTBOX") or self.root / "outbox" / "prompts").expanduser()
         self.runs = Path(runs or os.environ.get("ASSEMBLY_RUNS") or "~/machine-flows/files/runs").expanduser()
 
@@ -56,15 +58,41 @@ class Service:
                                     "editable": f.name not in EDIT_LOCKED} for f in k.fields]})
         return out
 
+    def _cached(self, kind_name: str, id: str) -> Dict[str, Any]:
+        """Parsed record, re-read only when its file changed. Treat as read-only; use _load for a copy you may mutate."""
+        p = Path(self.root) / "profiles" / kind_name / (id + ".json")
+        st = p.stat()
+        key = (st.st_mtime_ns, st.st_size)
+        c = self._rc.get(p)
+        if c and c[0] == key:
+            return c[1]
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        self._rc[p] = (key, rec)
+        return rec
+
     def _load(self, id: str) -> Dict[str, Any]:
         try:
-            return records.load(self.root, id, KINDS)
+            ids.parse_id(id)
+            for k in KINDS.values():
+                if k.prefix == ids.parse_id(id)[0]:
+                    return copy.deepcopy(self._cached(k.name, id))
+            raise KeyError(id)
         except (ValueError, KeyError, OSError):
             raise SiteError(["%s: no such record" % id], 404)
 
     def _creation(self, id: str) -> Optional[Dict[str, Any]]:
         p = self.root / "creations" / (id + ".json")
-        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+        try:
+            st = p.stat()
+        except OSError:
+            return None
+        key = (st.st_mtime_ns, st.st_size)
+        c = self._rc.get(p)
+        if c and c[0] == key:
+            return copy.deepcopy(c[1])
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        self._rc[p] = (key, rec)
+        return copy.deepcopy(rec)
 
     def _row(self, rec: Dict[str, Any]) -> Dict[str, Any]:
         c = self._creation(rec["id"])
@@ -82,7 +110,7 @@ class Service:
             if kind and k.name != kind:
                 continue
             for id in records.list_ids(self.root, k.name):
-                rec = records.load(self.root, id, KINDS)
+                rec = self._cached(k.name, id)
                 if q:
                     hay = " ".join([rec["id"], rec["kind"], rec["status"]] + [" ".join(map(str, v)) if isinstance(v, list) else str(v) for v in rec["fields"].values()]).lower()
                     if q.lower() not in hay:
@@ -711,7 +739,7 @@ class Service:
         evs = []
         for k in KINDS:
             for id in records.list_ids(self.root, k):
-                rec = records.load(self.root, id, KINDS)
+                rec = self._cached(k, id)
                 title = self._row(rec)["title"]
                 for e in rec["history"]:
                     evs.append({"at": e["at"], "id": id, "kind": k, "title": title, "event": e["event"], "detail": e.get("detail", "")})

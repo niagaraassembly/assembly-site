@@ -10,6 +10,7 @@ import json
 import os
 import re
 import threading
+import fcntl
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,17 +41,29 @@ class Notes:
         self._lock = threading.Lock()
 
     # ---- storage
+    def _sig(self):
+        try:
+            st = self.path.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
     def _events(self) -> List[Dict[str, Any]]:
-        if not self.path.exists():
-            return []
+        """Parsed events, cached until the file changes (by this or any other process)."""
+        sig = self._sig()
+        c = getattr(self, "_cache", None)
+        if c and c[0] == sig:
+            return c[1]
         out = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            try:
-                ev = json.loads(line)
-            except ValueError:
-                continue                      # a damaged line never hides the rest
-            if isinstance(ev, dict) and ev.get("op") and ev.get("target"):
-                out.append(ev)
+        if sig is not None:
+            for line in self.path.read_text(encoding="utf-8").splitlines():
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue                      # a damaged line never hides the rest
+                if isinstance(ev, dict) and ev.get("op") and ev.get("target"):
+                    out.append(ev)
+        self._cache = (sig, out, None)
         return out
 
     def _append(self, ev: Dict[str, Any]) -> Dict[str, Any]:
@@ -58,6 +71,7 @@ class Notes:
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path, "a", encoding="utf-8") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)         # exclusive across processes; released when the file closes
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
@@ -132,45 +146,41 @@ class Notes:
         return self._append({"op": "retract", "target": c[0]["target"], "actor": _actor(actor), "ref": comment_id})
 
     # ---- reads
+    def _state(self) -> Dict[str, Dict[str, Any]]:
+        """Replay every event once into per-target state; cached with the events."""
+        evs = self._events()
+        c = self._cache
+        if c[2] is not None:
+            return c[2]
+        st: Dict[str, Dict[str, Any]] = {}
+        for e in evs:
+            t = st.setdefault(e["target"], {"comments": {}, "order": [], "stars": {}, "flag": None, "hold": None})
+            op = e["op"]
+            if op == "comment":
+                t["comments"][e["id"]] = {"id": e["id"], "actor": e["actor"], "at": e["at"], "text": e["text"], "parent": e.get("parent"),
+                                          "retracted": False, "resolved": False, "resolved_by": None}
+                t["order"].append(e["id"])
+            elif op == "retract" and e.get("ref") in t["comments"]:
+                t["comments"][e["ref"]].update(retracted=True, text=None)
+            elif op == "resolve" and e.get("ref") in t["comments"]:
+                t["comments"][e["ref"]].update(resolved=bool(e.get("on")), resolved_by=e["actor"] if e.get("on") else None)
+            elif op == "star":
+                t["stars"][e["actor"]] = bool(e.get("on"))
+            elif op in ("flag", "hold"):
+                t[op] = {"actor": e["actor"], "at": e["at"], "reason": e.get("reason", "")} if e.get("on") else None
+        self._cache = (c[0], c[1], st)
+        return st
+
     def view(self, target: str) -> Dict[str, Any]:
-        comments: Dict[str, Dict[str, Any]] = {}
-        order: List[str] = []
-        stars: Dict[str, bool] = {}
-        flag = None
-        hold = None
-        for e in self._events():
-            if e["target"] != target:
-                continue
-            if e["op"] == "comment":
-                comments[e["id"]] = {"id": e["id"], "actor": e["actor"], "at": e["at"], "text": e["text"],
-                                     "parent": e.get("parent"), "retracted": False, "resolved": False, "resolved_by": None}
-                order.append(e["id"])
-            elif e["op"] == "retract" and e.get("ref") in comments:
-                comments[e["ref"]].update(retracted=True, text=None)
-            elif e["op"] == "resolve" and e.get("ref") in comments:
-                comments[e["ref"]].update(resolved=bool(e.get("on")), resolved_by=e["actor"] if e.get("on") else None)
-            elif e["op"] == "star":
-                stars[e["actor"]] = bool(e.get("on"))
-            elif e["op"] == "flag":
-                flag = {"actor": e["actor"], "at": e["at"], "reason": e.get("reason", "")} if e.get("on") else None
-            elif e["op"] == "hold":
-                hold = {"actor": e["actor"], "at": e["at"], "reason": e.get("reason", "")} if e.get("on") else None
-        return {"target": target, "comments": [comments[i] for i in order],
-                "starred_by": sorted(a for a, on in stars.items() if on), "flag": flag, "hold": hold}
+        t = self._state().get(target) or {"comments": {}, "order": [], "stars": {}, "flag": None, "hold": None}
+        return {"target": target, "comments": [dict(t["comments"][i]) for i in t["order"]],
+                "starred_by": sorted(a for a, on in t["stars"].items() if on), "flag": t["flag"], "hold": t["hold"]}
 
     def index(self) -> Dict[str, Dict[str, Any]]:
-        """Per-target summary: {comments, starred, flagged}. Retracted comments do not count."""
-        idx: Dict[str, Dict[str, Any]] = {}
-        targets = []
-        for e in self._events():
-            if e["target"] not in idx:
-                idx[e["target"]] = {}
-                targets.append(e["target"])
-        for t in targets:
-            v = self.view(t)
-            idx[t] = {"comments": sum(1 for c in v["comments"] if not c["retracted"]),
-                      "starred": bool(v["starred_by"]), "flagged": v["flag"] is not None, "held": v["hold"] is not None}
-        return idx
+        """Per-target summary: {comments, starred, flagged, held}. Retracted comments do not count."""
+        return {tg: {"comments": sum(1 for c in t["comments"].values() if not c["retracted"]),
+                     "starred": any(t["stars"].values()), "flagged": t["flag"] is not None, "held": t["hold"] is not None}
+                for tg, t in self._state().items()}
 
     def activity(self, limit: int = 50) -> List[Dict[str, Any]]:
         evs = self._events()

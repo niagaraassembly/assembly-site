@@ -16,6 +16,6 @@ CORE = core_path()
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-from assembly import actions, lint, bundle, change, create, handback, handoff, ids, kinds as kindslib, records  # noqa: E402
+from assembly import ids, actions, lint, bundle, change, create, handback, handoff, ids, kinds as kindslib, records  # noqa: E402
 
 KINDS = kindslib.load_kinds(CORE / "kinds")
