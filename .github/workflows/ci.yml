@@ -1,0 +1,29 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      # The site imports the core, so the core is checked out beside it. The core repo is private:
+      # add a read-only token as the repository secret ASSEMBLY_SYSTEM_TOKEN.
+      - uses: actions/checkout@v4
+        with:
+          repository: niagaraassembly/assembly-system
+          path: assembly-system
+          token: ${{ secrets.ASSEMBLY_SYSTEM_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # Browser test (tests/e2e) runs only where Playwright is installed; CI installs it so it always runs here.
+      - run: npm install --no-save playwright@1 && npx playwright install --with-deps chromium
+      - run: python -m unittest discover -s tests -v
+        env:
+          ASSEMBLY_SYSTEM: ${{ github.workspace }}/assembly-system
+          NODE_PATH: ${{ github.workspace }}/node_modules

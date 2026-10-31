@@ -31,13 +31,22 @@ def _day(s):
         raise SiteError(["on: must be a date like 2026-10-28"])
 
 
-def make_handler(svc: Service):
+def make_handler(svc: Service, log: Optional[Callable[[str], None]] = None):
     class H(BaseHTTPRequestHandler):
         server_version = "AssemblySite/0"
 
         def log_message(self, fmt, *args):
-            if os.environ.get("ASSEMBLY_SITE_LOG"):
-                sys.stderr.write("%s\n" % (fmt % args))
+            pass                                   # the default access log is replaced by `log` below (no query strings, with timing)
+
+        def log_request(self, code="-", size="-"):
+            self._code = code
+
+        def handle_one_request(self):
+            import time
+            t0, self._code = time.time(), "-"
+            super().handle_one_request()
+            if log and getattr(self, "command", None):
+                log("%s %s %s %dms" % (self.command, self.path.split("?")[0], self._code, (time.time() - t0) * 1000))
 
         def _send(self, code: int, body: bytes, ctype: str):
             self.send_response(code)
@@ -45,6 +54,7 @@ def make_handler(svc: Service):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'")
             self.end_headers()
             self.wfile.write(body)
@@ -54,6 +64,8 @@ def make_handler(svc: Service):
             self.send_response(200)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Disposition", 'attachment; filename="assembly-records.csv"')
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
@@ -73,6 +85,8 @@ def make_handler(svc: Service):
                 return self._err(403, "bad host")
             u = urlparse(self.path)
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
+            if u.path == "/healthz":
+                return self._json(200, svc.healthz())
             try:
                 if u.path == "/api/summary":
                     return self._json(200, svc.summary())
@@ -198,19 +212,20 @@ def make_handler(svc: Service):
     return H
 
 
-def serve(svc: Service, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), make_handler(svc))
+def serve(svc: Service, host: str = "127.0.0.1", port: int = 8765, log: Optional[Callable[[str], None]] = None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer((host, port), make_handler(svc, log))
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="assembly-site", description="Local website for the Assembly System, centred on Dispatch.")
     ap.add_argument("--port", type=int, default=int(os.environ.get("ASSEMBLY_SITE_PORT", "8765")))
+    ap.add_argument("--log", action="store_true", help="log one line per request to stderr (method, path without query, status, ms)")
     ap.add_argument("--root", help="record store (default: $ASSEMBLY_ROOT or ~/.local/share/assembly-site/root); never inside this repo")
     a = ap.parse_args(argv)
     root = Path(a.root or os.environ.get("ASSEMBLY_ROOT") or "~/.local/share/assembly-site/root").expanduser()
     root.mkdir(parents=True, exist_ok=True)
     svc = Service(root)
-    srv = serve(svc, port=a.port)
+    srv = serve(svc, port=a.port, log=(lambda line: print(line, file=sys.stderr)) if a.log or os.environ.get("ASSEMBLY_SITE_LOG") else None)
     print("Assembly Site on http://127.0.0.1:%d  (records: %s)" % (a.port, root))
     try:
         srv.serve_forever()

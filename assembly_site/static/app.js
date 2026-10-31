@@ -1,4 +1,4 @@
-// Buildless single-page app. All record text is inserted with textContent (never innerHTML).
+// Buildless single-page app. All record text is inserted as text nodes, never parsed as HTML.
 const $ = (s, r = document) => r.querySelector(s);
 const app = $("#app");
 // replaceChildren would print "null"/"false" for absent optional blocks; drop them instead.
@@ -27,6 +27,7 @@ async function api(path, body) {
 }
 
 const cleanups = [];
+const smooth = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 const diffView = (d) => d === null || d === undefined ? null
   : d === "" ? h("p", { class: "small muted" }, "Identical to the earlier task document, so writing it again changes nothing.")
   : h("div", {}, h("p", { class: "small" }, "Changes from the earlier task document:"), h("pre", { class: "diff" }, d.split("\n").map((l) => h("span", { class: l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : "" }, l + "\n"))));
@@ -78,7 +79,7 @@ function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.ad
 const errBox = (errs) => h("div", {}, h("ul", { class: "err" }, errs.map((e) => h("li", {}, e))),
   errs.some((e) => e.includes("changed since you loaded")) ? h("button", { class: "mini", onclick: () => route() }, "Reload this page") : null);
 const pill = (s) => h("span", { class: "pill " + s }, s);
-const marks = (r) => [r.starred ? h("span", { class: "mark on", title: "starred" }, "\u2605") : null, r.flagged ? h("span", { class: "mark on", title: "flagged" }, "\u2691") : null, r.notes ? h("span", { class: "mark", title: "comments" }, "\u{1F4AC}" + r.notes) : null];
+const marks = (r) => [r.starred ? h("span", { class: "mark on", role: "img", "aria-label": "starred", title: "starred" }, "\u2605") : null, r.flagged ? h("span", { class: "mark on", role: "img", "aria-label": "flagged", title: "flagged" }, "\u2691") : null, r.notes ? h("span", { class: "mark", role: "img", "aria-label": r.notes + " comments", title: "comments" }, "\u{1F4AC}" + r.notes) : null];
 const when = (iso) => (iso || "").replace("T", " ").slice(0, 16);
 const LABEL = { new: "Drafts / new", dispatched: "Dispatched", running: "Running", "awaiting-confirmation": "Awaiting you", answered: "Answered", failed: "Failed", retired: "Retired" };
 
@@ -106,7 +107,7 @@ async function viewDispatch() {
   show(h("h1", {}, "Dispatch"), banner,
     h("p", { class: "muted" }, "Capture saves a draft. Dispatching writes a task document to the outbox for machine-flows. Nothing is run from this site."),
     h("ol", { class: "steps" }, w.steps.map((s) => h("li", { class: s.count ? "has" : "" },
-      h("a", { href: s.route || "#/dispatch", onclick: s.route ? null : (e) => { e.preventDefault(); hb.scrollIntoView({ behavior: "smooth" }); } }, h("span", { class: "lab" }, s.label), h("b", {}, String(s.count)), h("span", { class: "hint" }, s.hint))))),
+      h("a", { href: s.route || "#/dispatch", onclick: s.route ? null : (e) => { e.preventDefault(); hb.scrollIntoView({ behavior: smooth }); } }, h("span", { class: "lab" }, s.label), h("b", {}, String(s.count)), h("span", { class: "hint" }, s.hint))))),
     h("section", { class: "card nextup" }, h("h2", {}, "Next up"),
       w.next.map((n, i) => h("div", { class: "next" + (i === 0 ? " first" : "") },
         h("div", {}, h("b", {}, n.label), h("div", { class: "small muted" }, n.detail)),
@@ -378,6 +379,9 @@ async function viewRecords(params) {
       h("button", { class: params.get("starred") ? "on" : "", onclick: () => go({ starred: params.get("starred") ? "" : "1" }) }, "\u2605 starred only"),
       h("a", { class: "btn", href: "/api/records.csv?" + csvq, download: "assembly-records.csv" }, "Export CSV")),
     h("p", { class: "small muted" }, d.total + " record" + (d.total === 1 ? "" : "s") + (params.get("q") ? " matching \u201c" + params.get("q") + "\u201d" : "")),
+    h("div", { class: "sorthead", role: "group", "aria-label": "Sort by" }, [["created", "Created"], ["id", "ID"], ["status", "Status"], ["kind", "Kind"], ["title", "Text"]].map(([k, t]) =>
+      h("button", Object.assign({ onclick: () => go(sort === k ? { order: order === "asc" ? "desc" : "asc" } : { sort: k, order: k === "created" ? "desc" : "asc" }) }, sort === k ? { "aria-sort": order === "asc" ? "ascending" : "descending" } : {}),
+        t + (sort === k ? (order === "asc" ? " \u2191" : " \u2193") : "")))),
     bar,
     h("div", { class: "card" }, d.rows.length ? h("label", { class: "inline small" }, allBox, " Select all on this page") : null, d.rows.length ? d.rows.map((r) => h("div", { class: "row" },
       h("div", { class: "t" }, rowBox(r), " ", h("a", { href: "#/r/" + r.id }, r.id), " ", pill(r.status), r.creation === "draft" ? h("span", { class: "pill" }, "draft") : null, " ", marks(r),
@@ -538,7 +542,14 @@ async function viewHealth() {
     h("section", { class: "card" }, h("h2", {}, "Backups"), h("p", { class: "small muted" }, "Copies records, creations, ID counters and notes into " + d.data + "/backups with a checksum manifest, then verifies the copy. Take one before moving the data root."),
       h("div", { class: "actions" }, h("button", { class: "primary", onclick: async () => { try { const r = await api("/api/backups", {}); toast("Backed up " + r.files + " files" + (r.verified ? " (verified)" : " (VERIFY FAILED)")); viewHealth(); } catch (e) { out.replaceChildren(errBox(e.errors)); } } }, "Back up now")), out,
       d.backups.length ? d.backups.map((b) => h("div", { class: "row" }, h("div", { class: "t" }, h("b", {}, b.name), h("div", { class: "small muted" }, b.files + " files")), h("button", { onclick: () => verify(b.name) }, "Verify"))) : h("p", { class: "muted small" }, "No backups yet.")),
-    h("section", { class: "card" }, h("h2", {}, "Locations"), h("dl", { class: "kv" }, h("dt", {}, "Records"), h("dd", {}, d.root), h("dt", {}, "Site data"), h("dd", {}, d.data))));
+    h("section", { class: "card" }, h("h2", {}, "Versions and locations"), h("dl", { class: "kv" },
+      h("dt", {}, "Site"), h("dd", {}, "v" + d.site.version + (d.site.commit ? " (" + d.site.commit + (d.site.dirty ? ", uncommitted changes" : "") + ")" : "")),
+      h("dt", {}, "Core"), h("dd", {}, (d.core.commit ? d.core.commit + (d.core.dirty ? " (uncommitted changes)" : "") : "not a git checkout") + " at " + d.core.path),
+      Object.entries(d.paths).filter(([k]) => k !== "core").flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]))),
+    h("section", { class: "card" }, h("h2", {}, "Why each stage reads built or not"), h("p", { class: "small muted" }, "The map probes the core checkout for the files each substage needs."),
+      h("details", {}, h("summary", {}, d.probes.length + " substages"), h("div", { class: "tw" }, h("table", { class: "probes" }, h("thead", {}, h("tr", {}, ["Substage", "State", "Needs", "Plan"].map((x) => h("th", {}, x)))),
+        h("tbody", {}, d.probes.map((p) => h("tr", {}, h("td", {}, p.title), h("td", {}, statePill(p.state)),
+          h("td", {}, p.needs.length ? p.needs.map((n) => h("div", { class: n.found ? "found" : "missing" }, (n.found ? "found " : "missing ") + n.spec)) : "(v0 only)"), h("td", {}, p.plan || "")))))))));
 }
 
 async function refreshBadge() {
@@ -590,7 +601,7 @@ const postNote = (target, body) => api("/api/notes", { target, actor: actorName(
 const targetHref = (t) => (t.startsWith("stage:") ? "#/stage/" + t.slice(6).split(".")[0] : "#/r/" + t);
 
 function starButton(target, initial) {
-  const b = h("button", { class: "mini" + (initial ? " on" : ""), title: "Star for you" }, initial ? "\u2605" : "\u2606");
+  const b = h("button", { class: "mini" + (initial ? " on" : ""), title: "Star for you", "aria-label": "Star", "aria-pressed": initial ? "true" : "false" }, initial ? "\u2605" : "\u2606");
   b.addEventListener("click", async (ev) => {
     ev.preventDefault(); ev.stopPropagation();
     try {
@@ -598,7 +609,7 @@ function starButton(target, initial) {
       const mine = v.starred_by.includes(actorName());
       const n = await postNote(target, { op: "star", on: !mine });
       const now = n.starred_by.includes(actorName());
-      b.className = "mini" + (now ? " on" : ""); b.textContent = now ? "\u2605" : "\u2606";
+      b.className = "mini" + (now ? " on" : ""); b.textContent = now ? "\u2605" : "\u2606"; b.setAttribute("aria-pressed", now ? "true" : "false");
     } catch (e) { toast(e.message); }
   });
   return b;

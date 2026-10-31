@@ -636,9 +636,33 @@ class Service:
         return self.record(old)
 
     # ---- health and backups
+    @staticmethod
+    def _git(path: Path) -> Dict[str, Any]:
+        import subprocess
+        try:
+            c = subprocess.run(["git", "-C", str(path), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=3).stdout.strip()
+            d = subprocess.run(["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True, timeout=3).stdout.strip()
+            return {"commit": c or None, "dirty": bool(d) if c else None}
+        except (OSError, subprocess.SubprocessError):
+            return {"commit": None, "dirty": None}
+
+    def healthz(self) -> Dict[str, Any]:
+        from . import __version__
+        return {"ok": True, "version": __version__, "core": bool(KINDS) and core.CORE.exists(), "time": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+
     def health(self) -> Dict[str, Any]:
+        from . import __version__
         errors, warnings = lint_mod.lint(self.root, KINDS)
-        return {"errors": errors, "warnings": warnings, "backups": self.backups(), "root": str(self.root), "data": str(self.data)}
+        probes = []
+        for st in stagelib.STAGES:
+            for sub in st["substages"]:
+                probes.append({"stage": st["key"], "sub": sub["key"], "title": "%s / %s" % (st["title"], sub["title"]), "state": stagelib.sub_state(sub),
+                               "plan": sub["plan"], "needs": [{"spec": n, "found": stagelib.probe(n)} for n in sub["needs"]]})
+        return {"errors": errors, "warnings": warnings, "backups": self.backups(), "root": str(self.root), "data": str(self.data),
+                "site": dict(self._git(Path(__file__).resolve().parent.parent), version=__version__),
+                "core": dict(self._git(core.CORE), path=str(core.CORE)),
+                "paths": {"root": str(self.root), "data": str(self.data), "outbox": str(self.outbox), "runs": str(self.runs), "core": str(core.CORE)},
+                "probes": probes}
 
     _BK = re.compile(r"^\d{8}-\d{6}(?:-\d+)?$")
 

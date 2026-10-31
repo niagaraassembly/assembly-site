@@ -88,6 +88,17 @@ let page;
   await p.click('button:has-text("Apply to")'); await p.waitForSelector('h2:has-text("done,")');
   must((await api('activity')).starred.length >= 3, 'bulk star applied');
 
+  // health: backup, verify, and the probe table explains the map
+  await p.goto(U + '#/health'); await p.waitForSelector('text=Backups');
+  await p.click('button:has-text("Back up now")'); await p.waitForSelector('#toast.show:has-text("Backed up")');
+  await p.waitForSelector('button:has-text("Verify")'); await p.click('button:has-text("Verify")');
+  await p.waitForSelector('#toast.show:has-text("verified")');
+  await p.click('summary:has-text("substages")'); await p.waitForSelector('text=missing module:assembly.resolve');
+
+  // records: sortable headers expose aria-sort
+  await p.goto(U + '#/records'); await p.waitForSelector('.sorthead');
+  await p.click('.sorthead button:has-text("ID")'); await p.waitForSelector('.sorthead button[aria-sort="ascending"]');
+
   // keyboard: g then b opens bundles
   await p.goto(U + '#/'); await p.waitForSelector('.scard'); await p.keyboard.press('g'); await p.keyboard.press('b'); await p.waitForSelector('.bundle');
 
