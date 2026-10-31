@@ -80,3 +80,25 @@ class HttpTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HttpStageNotesTest(HttpTest):
+    def test_stages_gates_and_notes_over_http(self):
+        code, d = self.call("/api/stages")
+        self.assertEqual(code, 200)
+        self.assertEqual(d["stages"][5]["key"], "dispatch")
+        self.assertEqual(len(d["gates"]), 6)
+        code, v = self.call("/api/notes", {"target": "stage:dispatch.emit", "op": "comment", "text": "hi", "actor": "ann"})
+        self.assertEqual(code, 200)
+        self.assertEqual(v["comments"][0]["text"], "hi")
+        self.assertEqual(self.call("/api/notes?target=stage:dispatch.emit")[1]["comments"][0]["actor"], "ann")
+        self.assertEqual(self.call("/api/notes", {"target": "Q-0099", "op": "star"})[0], 404)
+        self.assertEqual(self.call("/api/notes", {"target": "stage:dispatch", "op": "bad"})[0], 400)
+        self.assertEqual(self.call("/api/activity")[1]["activity"][0]["title"], "Dispatch / Emit")
+        self.assertEqual(self.call("/api/stages/nope")[0], 404)
+
+    def test_notes_post_needs_site_headers(self):
+        req = urllib.request.Request(self.base + "/api/notes", data=b'{"target":"stage:dispatch","op":"star"}', headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as c:
+            urllib.request.urlopen(req)
+        self.assertEqual(c.exception.code, 403)

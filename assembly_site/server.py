@@ -59,7 +59,16 @@ def make_handler(svc: Service):
                 if u.path == "/api/kinds":
                     return self._json(200, svc.kinds())
                 if u.path == "/api/records":
-                    return self._json(200, svc.records(q.get("kind"), q.get("status")))
+                    return self._json(200, svc.records(q.get("kind"), q.get("status"), q.get("starred") == "1"))
+                if u.path == "/api/stages":
+                    return self._json(200, {"stages": svc.stages(), "gates": svc.gates()})
+                m = re.fullmatch(r"/api/stages/([a-z0-9]+)", u.path)
+                if m:
+                    return self._json(200, svc.stage(m.group(1)))
+                if u.path == "/api/notes":
+                    return self._json(200, svc.notes(q.get("target", "")))
+                if u.path == "/api/activity":
+                    return self._json(200, {"activity": svc.activity(min(int(q.get("limit", "50") or 50), 200)), "starred": svc.starred()})
                 m = re.fullmatch(r"/api/records/" + _ID, u.path)
                 if m:
                     return self._json(200, svc.record(m.group(1)))
@@ -105,6 +114,8 @@ def make_handler(svc: Service):
                     return self._json(200, svc.preview_new(kind, values))
                 if p == "/api/handback":
                     return self._json(200, svc.handback(bool(body.get("apply"))))
+                if p == "/api/notes":
+                    return self._json(200, svc.post_note(str(body.get("target", "")), body))
                 m = re.fullmatch(r"/api/records/" + _ID + r"/(dispatch|set|retire|confirm)", p)
                 if m:
                     id, act = m.groups()

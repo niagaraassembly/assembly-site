@@ -11,7 +11,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import core
+import re
+
+from . import core, stages as stagelib
+from .notes import NoteError, Notes
 from .core import KINDS, change, create, handback, handoff, records
 
 # Fields the site never lets a person edit directly (provenance and links managed by actions).
@@ -26,8 +29,10 @@ class SiteError(ValueError):
 
 
 class Service:
-    def __init__(self, root: Path, outbox: Optional[Path] = None, runs: Optional[Path] = None):
+    def __init__(self, root: Path, outbox: Optional[Path] = None, runs: Optional[Path] = None, data: Optional[Path] = None):
         self.root = Path(root)
+        self.data = Path(data or os.environ.get("ASSEMBLY_SITE_DATA") or self.root.parent / "site-data").expanduser()
+        self.notes_store = Notes(self.data / "annotations.jsonl")
         self.outbox = Path(outbox or os.environ.get("ASSEMBLY_OUTBOX") or self.root / "outbox" / "prompts").expanduser()
         self.runs = Path(runs or os.environ.get("ASSEMBLY_RUNS") or "~/machine-flows/files/runs").expanduser()
 
@@ -61,13 +66,19 @@ class Service:
                 "sensitivity": f.get("sensitivity"), "creation": c["state"] if c else None,
                 "last": rec["history"][-1] if rec["history"] else None}
 
-    def records(self, kind: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    def records(self, kind: Optional[str] = None, status: Optional[str] = None, starred: bool = False) -> List[Dict[str, Any]]:
         rows = []
+        idx = self.notes_store.index()
         for k in KINDS.values():
             if kind and k.name != kind:
                 continue
             for id in records.list_ids(self.root, k.name):
-                rows.append(self._row(records.load(self.root, id, KINDS)))
+                r = self._row(records.load(self.root, id, KINDS))
+                n = idx.get(id, {})
+                r.update(starred=n.get("starred", False), flagged=n.get("flagged", False), notes=n.get("comments", 0))
+                rows.append(r)
+        if starred:
+            rows = [r for r in rows if r["starred"]]
         if status:
             rows = [r for r in rows if r["status"] == status]
         return sorted(rows, key=lambda r: r["created"], reverse=True)
@@ -204,3 +215,119 @@ class Service:
     def handback(self, apply: bool) -> Dict[str, Any]:
         log = handback.apply_handback(self.root, KINDS, self.runs, dry_run=not apply)
         return {"log": log, "applied": apply, "runs": str(self.runs), "runs_present": self.runs.is_dir()}
+
+    # ---- stage map
+    def _count(self, rows, b) -> int:
+        n = 0
+        for r in rows:
+            if r["kind"] != b["kind"]:
+                continue
+            if b["statuses"] and r["status"] not in b["statuses"]:
+                continue
+            if b["draft"] is True and r["creation"] != "draft":
+                continue
+            if b["draft"] is False and r["creation"] == "draft":
+                continue
+            n += 1
+        return n
+
+    def stages(self) -> List[Dict[str, Any]]:
+        rows = self.records()
+        idx = self.notes_store.index()
+        out = []
+        for st in stagelib.STAGES:
+            subs = []
+            for sub in st["substages"]:
+                state = stagelib.sub_state(sub)
+                n = idx.get("stage:%s.%s" % (st["key"], sub["key"]), {})
+                subs.append({"key": sub["key"], "title": sub["title"], "summary": sub["summary"], "state": state,
+                             "reason": stagelib.sub_reason(sub, state), "gate": sub["gate"], "plan": sub["plan"],
+                             "buckets": [dict(b, count=self._count(rows, b)) for b in sub["buckets"]],
+                             "actions": sub["actions"] if state != "unbuilt" else [],
+                             "target": "stage:%s.%s" % (st["key"], sub["key"]),
+                             "notes": n.get("comments", 0), "starred": n.get("starred", False), "flagged": n.get("flagged", False)})
+            states = {x["state"] for x in subs}
+            state = "built" if states == {"built"} else ("unbuilt" if states == {"unbuilt"} else "partial")
+            n = idx.get("stage:" + st["key"], {})
+            out.append({"key": st["key"], "group": st["group"], "title": st["title"], "ref": st["ref"], "summary": st["summary"],
+                        "state": state, "substages": subs, "target": "stage:" + st["key"],
+                        "notes": n.get("comments", 0), "starred": n.get("starred", False), "flagged": n.get("flagged", False)})
+        return out
+
+    def stage(self, key: str) -> Dict[str, Any]:
+        for s in self.stages():
+            if s["key"] == key:
+                return s
+        raise SiteError(["%s: no such stage" % key], 404)
+
+    def gates(self) -> List[Dict[str, Any]]:
+        by = {}
+        for st in self.stages():
+            for sub in st["substages"]:
+                by["%s.%s" % (st["key"], sub["key"])] = sub
+        out = []
+        for g in stagelib.GATES:
+            sub = by[g["at"]]
+            out.append(dict(g, state=sub["state"], reason=sub["reason"], pending=sum(b["count"] for b in sub["buckets"]),
+                            actions=sub["actions"], target=sub["target"]))
+        return out
+
+    # ---- notes (comments, stars, flags): about records, never edits to them
+    def _target_title(self, target: str) -> Optional[str]:
+        m = re.fullmatch(r"stage:([a-z0-9]+)(?:\.([a-z0-9]+))?", target)
+        if m:
+            for st in stagelib.STAGES:
+                if st["key"] == m.group(1):
+                    if not m.group(2):
+                        return st["title"]
+                    for sub in st["substages"]:
+                        if sub["key"] == m.group(2):
+                            return "%s / %s" % (st["title"], sub["title"])
+            return None
+        if re.fullmatch(r"[A-Z]+-\d{4,}", target):
+            try:
+                return self._row(records.load(self.root, target, KINDS))["title"] or target
+            except (ValueError, KeyError, OSError):
+                return None
+        return None
+
+    def notes(self, target: str) -> Dict[str, Any]:
+        if self._target_title(target) is None:
+            raise SiteError(["%s: no such record or stage" % target], 404)
+        v = self.notes_store.view(target)
+        v["title"] = self._target_title(target)
+        return v
+
+    def post_note(self, target: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        if self._target_title(target) is None:
+            raise SiteError(["%s: no such record or stage" % target], 404)
+        op, actor = body.get("op"), body.get("actor")
+        try:
+            if op == "comment":
+                self.notes_store.comment(target, body.get("text", ""), actor, body.get("parent"))
+            elif op == "star":
+                self.notes_store.star(target, actor, bool(body.get("on", True)))
+            elif op == "flag":
+                self.notes_store.flag(target, actor, bool(body.get("on", True)), body.get("reason", ""))
+            elif op == "retract":
+                self.notes_store.retract(str(body.get("id", "")), actor)
+            else:
+                raise SiteError(["op: must be comment, star, flag or retract"])
+        except NoteError as e:
+            raise SiteError([str(e)])
+        return self.notes(target)
+
+    def activity(self, limit: int = 50) -> List[Dict[str, Any]]:
+        out = []
+        for e in self.notes_store.activity(limit):
+            t = self._target_title(e["target"])
+            if t is not None:
+                out.append(dict(e, title=t))
+        return out
+
+    def starred(self) -> List[Dict[str, Any]]:
+        out = []
+        for target, n in self.notes_store.index().items():
+            if n["starred"] and self._target_title(target) is not None:
+                out.append({"target": target, "title": self._target_title(target), "flagged": n["flagged"], "comments": n["comments"]})
+        return sorted(out, key=lambda x: x["target"])

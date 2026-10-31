@@ -9,10 +9,20 @@ python3 -m unittest discover -s tests            # unit + HTTP tests (stdlib onl
 ```
 
 Configuration (environment): `ASSEMBLY_SYSTEM` (core checkout, default `../assembly-system`), `ASSEMBLY_ROOT` (record
-store, default `~/.local/share/assembly-site/root`, never inside this repo), `ASSEMBLY_OUTBOX` (task documents for
+store, default `~/.local/share/assembly-site/root`, never inside this repo), `ASSEMBLY_SITE_DATA` (annotations), `ASSEMBLY_OUTBOX` (task documents for
 machine-flows), `ASSEMBLY_RUNS` (machine-flows run records, read-only).
 
 ## What it does
+
+- **Map** (home): every stage and substage of the flow from the Dispatch briefing (Regional through Line), with the six named
+  human gates. Each substage reads *built*, *partial (v0)* or *not built*. State is probed from the core checkout (a substage flips
+  to built when the core file it needs appears, e.g. `assembly/resolve.py`), so the site cannot claim work the core cannot do.
+  Unbuilt substages offer no actions. Counts are the site's reading of v0 record statuses.
+- **Stage pages** (`#/stage/KEY`): per-substage buckets that link to filtered records, the actions the core supports today, and notes.
+- **Notes**: comments (threaded, author-retractable), stars (per actor) and flags (with reason) on any record and any stage or substage.
+  They live in the site's own append-only store (`ASSEMBLY_SITE_DATA`, default next to the record store, never in git), never edit a
+  record, and never reach task documents. A retract hides text from views but keeps it in the file. The "You" box sets a label, not a login.
+- **Activity**: recent comments, stars and flags, and everything starred.
 
 - **Dispatch** (home): pipeline counts, drafts ready to dispatch, items that need you (finished runs, failures), in-flight work, handback check.
 - **Capture**: forms generated from the core schema for every kind. Saving creates a *draft* with a minted ID. It never dispatches.
