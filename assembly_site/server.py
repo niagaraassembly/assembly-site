@@ -157,6 +157,12 @@ def make_handler(svc: Service):
                     return self._json(200, svc.preview_new(kind, values))
                 if p == "/api/handback":
                     return self._json(200, svc.handback(bool(body.get("apply"))))
+                if p == "/api/bulk":
+                    ids = body.get("ids")
+                    if not isinstance(ids, list):
+                        raise SiteError(["ids: must be a list"])
+                    return self._json(200, svc.bulk(str(body.get("op", "")), ids, str(body.get("reason", "")), bool(body.get("apply")),
+                                                    str(body.get("actor") or "owner (site)")[:40], body.get("revs") or {}))
                 if p == "/api/inbox/seen":
                     return self._json(200, svc.mark_seen(str(body.get("actor", ""))))
                 if p == "/api/backups":

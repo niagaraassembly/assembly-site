@@ -5,15 +5,18 @@ const must = (c, m) => { if (!c) throw new Error('FAILED: ' + m); };
 const api = (path, body) => fetch(U + 'api/' + path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Assembly-Site': '1' }, body: JSON.stringify(body) } : {}).then((r) => r.json());
 const mk = (f) => api('captures', { kind: 'question', apply: true, fields: Object.assign({ lens: 'law', trust: 'owner', sensitivity: 'private', intake: 'scan', region: 'Niagara', cadence: 'daily', origin: 'internal' }, f) });
 
+let page;
 (async () => {
   await mk({ text: 'What zoning applies to 676 King St W?' });
   await mk({ text: 'Which councils changed short-term rental bylaws this week?' });
   await mk({ text: 'File the 2025 assessment roll for Fort Erie', intake: 'file', region: 'Erie', cadence: 'once' });
   const b = await chromium.launch();
   const p = await b.newPage({ viewport: { width: 1200, height: 900 } });
+  page = p;
   const errs = [];
   p.on('pageerror', (e) => errs.push(e.message));
-  p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
+  // the browser logs every non-2xx response; the 400 (validation) and 409 (stale edit) are triggered on purpose below
+  p.on('console', (m) => { if (m.type() === 'error' && !/status of (400|409)\b/.test(m.text())) errs.push(m.text()); });
 
   // map: every stage, deep link to a substage, unbuilt stages offer no actions
   await p.goto(U + '#/'); await p.waitForSelector('.scard');
@@ -47,6 +50,44 @@ const mk = (f) => api('captures', { kind: 'question', apply: true, fields: Objec
   must((await p.locator('.row').count()) === 1, 'search finds one record');
   must((await p.locator('a:has-text("Export CSV")').getAttribute('href')).includes('q=zoning'), 'CSV export keeps the search');
 
+  // legend; freshness line; copy id button
+  await p.goto(U + '#/legend'); await p.waitForSelector('text=Can I act?');
+  await p.goto(U + '#/r/Q-0001'); await p.waitForSelector('.fresh');
+  must((await p.locator('button:has-text("Copy ID")').count()) === 1, 'copy ID button');
+
+  // inline field errors: server message lands on the field
+  await p.goto(U + '#/new?kind=question'); await p.waitForSelector('[name=text]');
+  await p.fill('[name=text]', 'needs a lens'); await p.click('button:has-text("Preview")');
+  await p.waitForSelector('.fe'); must((await p.locator('[name=lens].bad').count()) === 1, 'lens field marked');
+
+  // capture draft survives leaving and coming back; the leave prompt appears when there are unsaved changes
+  let prompted = false; p.on('dialog', async (d) => { prompted = true; await d.dismiss(); });
+  await p.fill('[name=text]', 'half typed question');
+  await p.evaluate(() => { location.hash = '#/legend'; }); await p.waitForTimeout(300);
+  must(prompted, 'unsaved-changes prompt shown'); must(p.url().endsWith('#/new?kind=question'), 'stayed on the form after dismissing');
+  p.removeAllListeners('dialog'); p.on('dialog', (d) => d.accept());
+  await p.evaluate(() => { location.hash = '#/legend'; }); await p.waitForSelector('text=Can I act?');
+  await p.goto(U + '#/new?kind=question'); await p.waitForSelector('text=Restored your unsaved draft');
+  must((await p.inputValue('[name=text]')) === 'half typed question', 'draft restored');
+  await p.click('button:has-text("Discard draft")'); await p.waitForSelector('[name=text]');
+  p.removeAllListeners('dialog');
+
+  // stale edit: change the record elsewhere, then save from the old page -> conflict message with reload
+  await p.goto(U + '#/r/Q-0002'); await p.waitForSelector('button:has-text("Edit metadata")');
+  await api('records/Q-0002/set', { set: { region: 'Changed elsewhere' }, apply: true, rev: 0 });
+  await p.click('button:has-text("Edit metadata")'); await p.waitForSelector('[name=region]');
+  await p.fill('[name=region]', 'Mine'); await p.click('button:has-text("Preview change")');
+  await p.waitForSelector('text=changed since you loaded it'); must((await p.locator('button:has-text("Reload this page")').count()) === 1, 'reload offered');
+  await p.reload(); await p.waitForSelector('table.chg');
+  must((await p.locator('table.chg td.add').first().textContent()).includes('Changed elsewhere'), 'field-level history shows new value');
+
+  // bulk: select all on the page and star them
+  await p.goto(U + '#/records'); await p.waitForSelector('.row');
+  await p.check('input[aria-label="select all on this page"]'); await p.selectOption('select[aria-label="bulk action"]', 'star');
+  await p.click('.bulkbar button:has-text("Preview")'); await p.waitForSelector('text=can be done');
+  await p.click('button:has-text("Apply to")'); await p.waitForSelector('h2:has-text("done,")');
+  must((await api('activity')).starred.length >= 3, 'bulk star applied');
+
   // keyboard: g then b opens bundles
   await p.goto(U + '#/'); await p.waitForSelector('.scard'); await p.keyboard.press('g'); await p.keyboard.press('b'); await p.waitForSelector('.bundle');
 
@@ -58,4 +99,8 @@ const mk = (f) => api('captures', { kind: 'question', apply: true, fields: Objec
   must(errs.length === 0, 'no console errors: ' + JSON.stringify(errs));
   await b.close();
   console.log('e2e ok');
-})().catch((e) => { console.error(e.message); process.exit(1); });
+})().catch(async (e) => {
+  console.error(e.message);
+  try { console.error('--- page at failure: ' + page.url() + '\n' + (await page.locator('main').innerText()).slice(0, 600)); } catch (x) { /* page gone */ }
+  process.exit(1);
+});

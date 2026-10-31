@@ -122,3 +122,12 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
   #nav{flex-wrap:wrap;width:100%;order:3}#nav a{padding:5px 9px}
   .top .actor{margin-left:auto}
 }
+
+.bad{border-color:var(--bad)!important}.fe{color:var(--bad);font-size:13px;margin:2px 0 0}
+.fresh{margin:0 0 10px}.fresh a{color:var(--mute)}
+.tl li.here{background:var(--code);border-left-color:var(--acc)}
+table.chg{border-collapse:collapse;margin:4px 0}table.chg td{border:0;padding:1px 8px 1px 0;font-size:13px}table.chg td.del{color:var(--bad);text-decoration:line-through}table.chg td.add{color:var(--ok)}
+.legendlink{color:var(--mute);font-size:13px;text-decoration:none}
+.top .legendlink{margin-left:auto}.top .legendlink+.actor{margin-left:12px}
+
+.bulkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.bulkbar[hidden]{display:none}.bulkbar>div{flex-basis:100%}.bulkbar select,.bulkbar input[type=text]{width:auto;flex:1 1 160px}

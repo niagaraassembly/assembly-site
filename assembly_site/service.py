@@ -747,3 +747,51 @@ class Service:
         evs.reverse()
         limit = max(1, min(int(limit), 200))
         return {"events": evs[offset: offset + limit], "total": len(evs), "offset": offset, "limit": limit}
+
+    # ---- bulk actions on a chosen set of records (each record is handled on its own; one failure does not stop the rest)
+    BULK_OPS = ("star", "unstar", "hold", "release", "retire", "dispatch")
+
+    def bulk(self, op: str, ids: List[str], reason: str = "", apply: bool = False, actor: str = "owner (site)",
+             revs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if op not in self.BULK_OPS:
+            raise SiteError(["op: one of %s" % ", ".join(self.BULK_OPS)])
+        ids = list(dict.fromkeys(str(i) for i in ids))
+        if not ids:
+            raise SiteError(["choose at least one record"])
+        if len(ids) > 50:
+            raise SiteError(["at most 50 records at a time"])
+        if op == "retire" and not reason.strip():
+            raise SiteError(["reason: required"])
+        revs = revs or {}
+        results = []
+        for id in ids:
+            try:
+                self._load(id)
+                if op in ("star", "unstar"):
+                    msg = "would %s" % op
+                    if apply:
+                        self.notes_store.star(id, actor, op == "star")
+                        msg = "%sred" % op
+                elif op in ("hold", "release"):
+                    if self._load(id)["status"] != "new":
+                        raise SiteError(["%s is not new; only drafts can be held" % id])
+                    msg = "would %s" % op
+                    if apply:
+                        self.notes_store.hold(id, actor, op == "hold", reason)
+                        msg = "%s done" % op
+                elif op == "retire":
+                    msg = self.retire(id, reason, apply, actor, expected_rev=revs.get(id)) and ("retired" if apply else "would retire")
+                else:
+                    if apply:
+                        self.dispatch(id, revs.get(id))
+                        msg = "task document written"
+                    else:
+                        p = self.dispatch_preview(id)
+                        if p["errors"]:
+                            raise SiteError(p["errors"])
+                        msg = "would write " + ", ".join(t["file"] for t in p["tasks"])
+                results.append({"id": id, "ok": True, "message": msg})
+            except SiteError as e:
+                results.append({"id": id, "ok": False, "errors": e.errors, "message": "; ".join(e.errors)})
+        ok = sum(1 for r in results if r["ok"])
+        return {"op": op, "apply": apply, "results": results, "ok": ok, "failed": len(results) - ok}

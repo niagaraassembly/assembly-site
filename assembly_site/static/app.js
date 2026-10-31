@@ -31,6 +31,48 @@ const diffView = (d) => d === null || d === undefined ? null
   : d === "" ? h("p", { class: "small muted" }, "Identical to the earlier task document, so writing it again changes nothing.")
   : h("div", {}, h("p", { class: "small" }, "Changes from the earlier task document:"), h("pre", { class: "diff" }, d.split("\n").map((l) => h("span", { class: l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : "" }, l + "\n"))));
 
+// ---- unsaved-changes guard, capture drafts, copy and download helpers, inline field errors
+const guard = { dirty: false, hash: location.hash };
+const clean = () => { guard.dirty = false; };
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* none */ } }, del: (k) => { try { localStorage.removeItem(k); } catch (e) { /* none */ } } };
+function watchDirty(form, draftKey, extra) {
+  form.addEventListener("input", () => {
+    guard.dirty = true;
+    if (draftKey) { const v = {}; for (const el of form.elements) if (el.name && el.value !== "") v[el.name] = el.value; if (extra) v["\u0000lines"] = extra.value; store.set(draftKey, JSON.stringify(v)); }
+  });
+}
+function restoreDraft(form, draftKey, extra) {
+  const raw = store.get(draftKey);
+  if (!raw) return null;
+  let v; try { v = JSON.parse(raw); } catch (e) { return null; }
+  let n = 0;
+  for (const [k, val] of Object.entries(v)) { if (k === "\u0000lines") { if (extra) { extra.value = val; n++; } continue; } const el = form.elements[k]; if (el) { el.value = val; n++; const d = el.closest("details"); if (d) d.open = true; } }
+  return n ? h("p", { class: "note small" }, "Restored your unsaved draft. ", h("button", { class: "mini", onclick: () => { store.del(draftKey); clean(); route(); } }, "Discard draft")) : null;
+}
+function copyText(text) {
+  const ok = () => toast("Copied");
+  if (navigator.clipboard && window.isSecureContext !== false) navigator.clipboard.writeText(text).then(ok, () => fallbackCopy(text, ok)); else fallbackCopy(text, ok);
+}
+function fallbackCopy(text, ok) { const t = h("textarea", { style: null }); t.value = text; document.body.append(t); t.select(); try { document.execCommand("copy"); ok(); } catch (e) { toast("Copy failed"); } t.remove(); }
+const copyBtn = (label, text) => h("button", { class: "mini", type: "button", onclick: () => copyText(text) }, label);
+function downloadBtn(name, text) {
+  return h("button", { class: "mini", type: "button", onclick: () => { const u = URL.createObjectURL(new Blob([text], { type: "text/markdown" })); const l = h("a", { href: u, download: name }); document.body.append(l); l.click(); l.remove(); setTimeout(() => URL.revokeObjectURL(u), 1000); } }, "Download .md");
+}
+// Mark the field each "name: message" error is about; return the errors that matched no field.
+function markErrors(root, errs) {
+  root.querySelectorAll(".fe").forEach((x) => x.remove());
+  root.querySelectorAll(".bad").forEach((x) => x.classList.remove("bad"));
+  const left = []; let first = null;
+  for (const e of errs) {
+    const m = String(e).match(/^([a-z_]+): (.*)$/), el = m && root.querySelector('[name="' + m[1] + '"]');
+    if (!el) { left.push(e); continue; }
+    el.classList.add("bad"); const d = el.closest("details"); if (d) d.open = true;
+    el.after(h("div", { class: "fe", role: "alert" }, m[2])); first = first || el;
+  }
+  if (first) first.focus();
+  return left;
+}
+
 let toastT;
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
 const errBox = (errs) => h("div", {}, h("ul", { class: "err" }, errs.map((e) => h("li", {}, e))),
@@ -171,7 +213,7 @@ function bundleCard(b, on, expanded) {
           const md = m.tasks[0].markdown;
           const tag = (k) => (md.match(new RegExp("^" + k + ":\\s*(.*)$", "m")) || [])[1];
           return h("details", {}, h("summary", {}, h("b", {}, m.id), " ", h("code", {}, m.tasks[0].file), " ",
-            h("span", { class: "chip" }, "permission " + (tag("permission") || "?")), h("span", { class: "chip" + (tag("approval") === "none" ? "" : " partial") }, "approval " + (tag("approval") || "?"))), diffView(m.tasks[0].diff), h("pre", {}, md));
+            h("span", { class: "chip" }, "permission " + (tag("permission") || "?")), h("span", { class: "chip" + (tag("approval") === "none" ? "" : " partial") }, "approval " + (tag("approval") || "?"))), diffView(m.tasks[0].diff), downloadBtn(m.tasks[0].file, md), h("pre", {}, md));
         }),
         h("div", { class: "actions" }, h("label", { class: "inline" }, ok, " I have read these task documents, including approval and permission"), go, h("button", { onclick: () => out.replaceChildren() }, "Cancel"))));
     } catch (e) { out.replaceChildren(errBox(e.errors)); }
@@ -188,7 +230,7 @@ function bundleCard(b, on, expanded) {
         m.readiness === "held" ? h("button", { class: "mini", onclick: () => holdIt(m.id, false) }, "Release") : null));
   });
   return h("section", { class: "card bundle", id: b.key_id },
-    h("div", { class: "bh" }, h("h2", {}, "Bundle ", h("code", {}, bundleTitle(b))), h("span", { class: "chip " + (b.due ? "built" : "") }, b.due ? "due " + on : "not due " + on), h("span", { class: "small muted" }, "period " + b.period + " \u00b7 " + b.members.length + " question" + (b.members.length === 1 ? "" : "s"))),
+    h("div", { class: "bh" }, h("h2", {}, "Bundle ", h("code", {}, bundleTitle(b))), h("span", { class: "chip " + (b.due ? "built" : "") }, b.due ? "due " + on : "not due " + on), copyBtn("Copy link", location.origin + "/#/bundles?view=bundles&on=" + on + "&open=" + b.key_id), h("span", { class: "small muted" }, "period " + b.period + " \u00b7 " + b.members.length + " question" + (b.members.length === 1 ? "" : "s"))),
     h("dl", { class: "key" }, Object.keys(KEY_LABEL).map((f) => h("div", { class: "kc" + (b.key[f] ? "" : " unstated"), title: KEY_WHY[f] }, h("dt", {}, KEY_LABEL[f]), h("dd", {}, b.key[f] || "unstated")))),
     h("div", { class: "tw" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "Question"), h("th", {}, "What it says"), h("th", {}, "Can I act?"), h("th", {}, "Status"), h("th", {}, "Schedule"), h("th", {}, ""))), h("tbody", {}, rows))),
     bar, out,
@@ -257,6 +299,9 @@ async function viewNew(params) {
   const form = groupedForm(bulk ? editable.filter((f) => f.name !== prim) : editable, null, opts);
   const lines = bulk ? h("textarea", { class: "bulk", placeholder: "One " + prim + " per line (up to 50)" }) : null;
   const out = h("div", {});
+  const draftKey = "as-draft-" + kind.name + (bulk ? ":bulk" : "");
+  const restored = restoreDraft(form, draftKey, lines);
+  watchDirty(form, draftKey, lines); if (lines) lines.addEventListener("input", () => form.dispatchEvent(new Event("input")));
   const simBox = (sim) => sim && sim.length ? h("div", { class: "note small" }, "Possible duplicates (you can still save): ", sim.map((x) => h("span", {}, h("a", { href: "#/r/" + x.id }, x.id), " " + x.title.slice(0, 50) + " (" + Math.round(x.score * 100) + "% alike) "))) : null;
   const run = async (apply) => {
     try {
@@ -266,7 +311,7 @@ async function viewNew(params) {
           out.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Preview: " + r.items.length + " drafts"), h("p", { class: "muted small" }, r.note),
             r.items.map((i) => h("div", { class: "row" }, h("div", { class: "t" }, h("span", { class: "muted small" }, "line " + i.line + " "), i.fields[prim], simBox(i.similar)))),
             h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => run(true) }, "Save " + r.items.length + " drafts"))));
-        } else { toast("Saved " + r.created.length + " drafts"); location.hash = "#/records?kind=" + kind.name; }
+        } else { toast("Saved " + r.created.length + " drafts"); store.del(draftKey); clean(); location.hash = "#/records?kind=" + kind.name; }
         return;
       }
       const r = await api("/api/captures", { kind: kind.name, fields: readForm(form, kind.fields), apply });
@@ -275,8 +320,8 @@ async function viewNew(params) {
           h("dl", { class: "kv" }, Object.entries(r.fields).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, Array.isArray(v) ? v.join(", ") : String(v))])),
           h("p", { class: "small" }, "Steps: " + r.steps.map((s) => s.id + " (" + s.do + ")").join(", ")),
           h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => run(true) }, "Save draft"))));
-      } else { toast("Saved " + r.record.id); location.hash = "#/r/" + r.record.id; }
-    } catch (e) { out.replaceChildren(errBox(e.errors || [e.message])); }
+      } else { toast("Saved " + r.record.id); store.del(draftKey); clean(); location.hash = "#/r/" + r.record.id; }
+    } catch (e) { const left = markErrors(form, e.errors || [e.message]); out.replaceChildren(left.length ? errBox(left) : h("p", { class: "err" }, "Fix the highlighted fields.")); }
   };
   form.addEventListener("submit", (ev) => { ev.preventDefault(); run(false); });
   const mode = (m) => "#/new?kind=" + kind.name + (m ? "&mode=" + m : "");
@@ -285,7 +330,7 @@ async function viewNew(params) {
     h("div", { class: "tabs" }, ks.map((k) => h("button", { class: k.name === kind.name ? "on" : "", onclick: () => (location.hash = "#/new?kind=" + k.name) }, k.name))),
     h("div", { class: "tabs" }, h("button", { class: bulk ? "" : "on", onclick: () => (location.hash = mode("")) }, "One"),
       ks.length && kind.fields.some((f) => f.name === prim) ? h("button", { class: bulk ? "on" : "", onclick: () => (location.hash = mode("bulk")) }, "Several at once") : null),
-    h("p", { class: "small muted" }, kind.description),
+    h("p", { class: "small muted" }, kind.description), restored,
     h("div", { class: "card" }, bulk ? [h("label", {}, prim + "s ", h("span", { class: "hint" }, "one per line; the fields below apply to all of them")), lines] : null, form,
       h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => run(false) }, "Preview"))), out);
 }
@@ -302,6 +347,29 @@ async function viewRecords(params) {
   search.addEventListener("keydown", (e) => { if (e.key === "Enter") go({ q: search.value.trim() }); });
   const sort = params.get("sort") || "created", order = params.get("order") || "desc";
   const csvq = new URLSearchParams(q); csvq.delete("page");
+  const picked = new Set(), bar = h("div", { class: "card bulkbar" }), res = h("div");
+  const boxes = [];
+  const renderBar = () => {
+    const op = h("select", { "aria-label": "bulk action" }, [["star", "Star"], ["unstar", "Unstar"], ["hold", "Hold (drafts)"], ["release", "Release hold"], ["retire", "Retire"], ["dispatch", "Dispatch (writes task documents)"]].map(([v, t]) => h("option", { value: v }, t)));
+    const reason = h("input", { type: "text", placeholder: "reason (hold, retire)", "aria-label": "reason" });
+    const body = (apply) => ({ op: op.value, ids: [...picked], reason: reason.value, apply, actor: actorName(), revs: Object.fromEntries(d.rows.filter((r) => picked.has(r.id)).map((r) => [r.id, r.rev])) });
+    const list = (r) => h("div", {}, r.results.map((x) => h("div", { class: "row" }, h("a", { href: "#/r/" + x.id }, x.id), x.ok ? h("span", { class: "small" }, x.message) : errBox(x.errors))));
+    const preview = async () => {
+      try {
+        const r = await api("/api/bulk", body(false));
+        const needsOk = ["retire", "dispatch"].includes(op.value), ok = h("input", { type: "checkbox" });
+        const go = h("button", { class: "primary", disabled: needsOk, onclick: async () => { go.disabled = true; try { const x = await api("/api/bulk", body(true)); res.replaceChildren(h("div", { class: "card inner" }, h("h2", {}, x.ok + " done, " + x.failed + " failed"), list(x), h("div", { class: "actions" }, h("button", { class: "primary", onclick: route }, "Refresh list")))); } catch (e) { res.prepend(errBox(e.errors)); go.disabled = false; } } }, "Apply to " + r.ok + " record" + (r.ok === 1 ? "" : "s"));
+        ok.addEventListener("change", () => (go.disabled = !ok.checked));
+        res.replaceChildren(h("div", { class: "card inner" }, h("h2", {}, "Preview: " + r.ok + " can be done, " + r.failed + " cannot"), list(r),
+          h("div", { class: "actions" }, needsOk ? h("label", { class: "inline" }, ok, " I have read the preview; this " + (op.value === "retire" ? "retires" : "writes task documents for") + " the records listed as OK") : null, r.ok ? go : null)));
+      } catch (e) { res.replaceChildren(errBox(e.errors || [e.message])); }
+    };
+    bar.replaceChildren(h("span", { class: "small" }, picked.size + " selected"), op, reason, h("button", { disabled: !picked.size, onclick: preview }, "Preview"), res);
+    bar.hidden = !picked.size && !res.firstChild;
+  };
+  const rowBox = (r) => { const cb = h("input", { type: "checkbox", "aria-label": "select " + r.id }); cb.addEventListener("change", () => { cb.checked ? picked.add(r.id) : picked.delete(r.id); renderBar(); }); boxes.push(cb); return cb; };
+  const allBox = h("input", { type: "checkbox", "aria-label": "select all on this page" });
+  allBox.addEventListener("change", () => { boxes.forEach((cb, i) => { cb.checked = allBox.checked; allBox.checked ? picked.add(d.rows[i].id) : picked.delete(d.rows[i].id); }); renderBar(); });
   show(h("h1", {}, "Records"),
     h("div", { class: "actions" }, search, h("button", { onclick: () => go({ q: search.value.trim() }) }, "Search")),
     h("div", { class: "actions" }, sel("kind", "kinds", ks.map((k) => k.name)), sel("status", "statuses", Object.keys(LABEL)),
@@ -310,16 +378,26 @@ async function viewRecords(params) {
       h("button", { class: params.get("starred") ? "on" : "", onclick: () => go({ starred: params.get("starred") ? "" : "1" }) }, "\u2605 starred only"),
       h("a", { class: "btn", href: "/api/records.csv?" + csvq, download: "assembly-records.csv" }, "Export CSV")),
     h("p", { class: "small muted" }, d.total + " record" + (d.total === 1 ? "" : "s") + (params.get("q") ? " matching \u201c" + params.get("q") + "\u201d" : "")),
-    h("div", { class: "card" }, d.rows.length ? d.rows.map((r) => h("div", { class: "row" },
-      h("div", { class: "t" }, h("a", { href: "#/r/" + r.id }, r.id), " ", pill(r.status), r.creation === "draft" ? h("span", { class: "pill" }, "draft") : null, " ", marks(r),
+    bar,
+    h("div", { class: "card" }, d.rows.length ? h("label", { class: "inline small" }, allBox, " Select all on this page") : null, d.rows.length ? d.rows.map((r) => h("div", { class: "row" },
+      h("div", { class: "t" }, rowBox(r), " ", h("a", { href: "#/r/" + r.id }, r.id), " ", pill(r.status), r.creation === "draft" ? h("span", { class: "pill" }, "draft") : null, " ", marks(r),
         h("div", { class: "small muted" }, r.title || "(untitled)")),
       h("span", { class: "small muted" }, when(r.created)))) : h("p", { class: "muted" }, "No records.")),
     d.pages > 1 ? h("div", { class: "actions" }, h("button", { disabled: d.page <= 1, onclick: () => go({ page: String(d.page - 1) }) }, "\u2190 Previous"),
       h("span", { class: "small" }, "Page " + d.page + " of " + d.pages), h("button", { disabled: d.page >= d.pages, onclick: () => go({ page: String(d.page + 1) }) }, "Next \u2192")) : null);
+  renderBar();
 }
 
 // ---------- record detail
-async function viewRecord(id, mode) {
+// "region: Niagara -> Erie; cadence: daily -> weekly [by owner]" as a field-by-field table
+function changeTable(detail) {
+  const by = (detail.match(/ \[by ([^\]]*)\]$/) || [])[1], body = detail.replace(/ \[by [^\]]*\]$/, "");
+  const rows = body.split(/; (?=[a-z_]+: )/).map((x) => x.match(/^([a-z_]+): (.*) -> (.*)$/s)).filter(Boolean);
+  if (!rows.length) return h("div", { class: "small" }, detail);
+  return h("div", { class: "small" }, h("table", { class: "chg" }, rows.map(([, f, o, n]) => h("tr", {}, h("td", {}, f), h("td", { class: "del" }, o), h("td", {}, "\u2192"), h("td", { class: "add" }, n)))), by ? h("span", { class: "muted" }, "by " + by) : null);
+}
+
+async function viewRecord(id, mode, evParam) {
   const [d, ks] = await Promise.all([api("/api/records/" + id), kinds()]);
   const rec = d.record, kind = ks.find((k) => k.name === rec.kind), rev = rec.rev || 0;   // sent with every change so a stale page is refused
   const retired = rec.status === "retired";
@@ -332,7 +410,7 @@ async function viewRecord(id, mode) {
       const go = h("button", { class: "primary", disabled: true, onclick: async () => { try { await api("/api/records/" + id + "/dispatch", { apply: true, rev }); toast("Task document written"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Write to outbox");
       ok.addEventListener("change", () => (go.disabled = !ok.checked));
       panel.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Dispatch preview"), h("p", { class: "muted small" }, p.meaning),
-        p.tasks.map((t) => h("div", {}, h("p", { class: "small" }, "File: ", h("code", {}, t.file), t.written ? " (already in outbox; identical rewrite is a no-op)" : ""), diffView(t.diff), h("details", {}, h("summary", {}, "Full task document"), h("pre", {}, t.markdown)))),
+        p.tasks.map((t) => h("div", {}, h("p", { class: "small" }, "File: ", h("code", {}, t.file), t.written ? " (already in outbox; identical rewrite is a no-op)" : ""), diffView(t.diff), h("details", {}, h("summary", {}, "Full task document"), downloadBtn(t.file, t.markdown), h("pre", {}, t.markdown)))),
         p.errors.length ? errBox(p.errors) : h("div", { class: "actions" }, h("label", { class: "inline" }, ok, " I have read the task and its approval/permission tags"), go)));
     } catch (e) { panel.replaceChildren(errBox(e.errors)); }
   };
@@ -356,10 +434,11 @@ async function viewRecord(id, mode) {
         if (!p.diff.length) return out.replaceChildren(h("p", { class: "muted" }, "No changes."));
         out.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Changes"), h("dl", { class: "kv" }, p.diff.flatMap((x) => [h("dt", {}, x.field), h("dd", {}, (x.old == null ? "(unset)" : String(x.old)) + " → " + (x.new == null ? "(unset)" : String(x.new)))])),
           p.redispatch ? h("p", { class: "note small" }, "This record was dispatched. After saving, dispatch again to write a revised task document beside the earlier one.") : null,
-          h("div", { class: "actions" }, h("button", { class: "primary", onclick: async () => { try { await api("/api/records/" + id + "/set", { ...c, apply: true }); toast("Saved (rev bumped)"); viewRecord(id); } catch (e) { out.prepend(errBox(e.errors)); } } }, "Save change"))));
-      } catch (e) { out.replaceChildren(errBox(e.errors)); }
+          h("div", { class: "actions" }, h("button", { class: "primary", onclick: async () => { try { await api("/api/records/" + id + "/set", { ...c, apply: true }); toast("Saved (rev bumped)"); clean(); viewRecord(id); } catch (e) { out.prepend(errBox(e.errors)); } } }, "Save change"))));
+      } catch (e) { const left = markErrors(form, e.errors || [e.message]); out.replaceChildren(left.length ? errBox(left) : h("p", { class: "err" }, "Fix the highlighted fields.")); }
     };
     form.addEventListener("submit", (ev) => { ev.preventDefault(); preview(); });
+    watchDirty(form);
     panel.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Edit metadata"), form, h("div", { class: "actions" }, h("button", { class: "primary", onclick: preview }, "Preview change"))), out);
   };
 
@@ -405,7 +484,7 @@ async function viewRecord(id, mode) {
 
   show(
     h("p", { class: "small" }, h("a", { href: "#/records" }, "← Records")),
-    h("h1", {}, id, " ", pill(rec.status), d.creation && d.creation.state === "draft" ? h("span", { class: "pill" }, "draft") : null),
+    h("h1", {}, id, " ", pill(rec.status), d.creation && d.creation.state === "draft" ? h("span", { class: "pill" }, "draft") : null, " ", starButton(id, false), " ", copyBtn("Copy ID", id), " ", copyBtn("Copy link", location.origin + "/#/r/" + id)),
     h("p", { class: "muted small" }, rec.kind + " · rev " + (rec.rev || 0) + " · created " + when(rec.created)),
     rec.status === "awaiting-confirmation" ? h("p", { class: "note" }, "machine-flows reports this run as done. Read the result, then confirm; only you mark a question answered.") : null,
     rec.status === "dispatched" ? h("p", { class: "note small" }, "A task document was written. It stays dispatched until a machine-flows run record says otherwise (use Check runs on the Dispatch page).") : null,
@@ -414,12 +493,29 @@ async function viewRecord(id, mode) {
       h("section", { class: "card" }, h("h2", {}, "Fields"), h("dl", { class: "kv" },
         Object.entries(rec.fields).sort().flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, Array.isArray(v) ? v.join(", ") : String(v))]))),
       h("section", { class: "card" }, h("h2", {}, "History"), h("ul", { class: "tl" },
-        [...rec.history].reverse().map((e) => h("li", {}, h("b", {}, e.event), " ", h("span", { class: "muted small" }, when(e.at)), e.detail ? h("div", { class: "small" }, e.detail) : null)))),
+        rec.history.map((e, i) => ({ e, i })).reverse().map(({ e, i }) => h("li", { id: "ev-" + i, class: String(i) === evParam ? "here" : "" }, h("b", {}, e.event), " ", h("span", { class: "muted small" }, when(e.at)), " ",
+          copyBtn("link", location.origin + "/#/r/" + id + "?event=" + i), e.event === "changed" ? changeTable(e.detail) : (e.detail ? h("div", { class: "small" }, e.detail) : null)))),
+        h("p", { class: "small muted" }, "The core cuts long values in history at 80 characters.")),
       h("section", { class: "card" }, h("h2", {}, "Notes"), notesPanel(id)),
       d.creation ? h("section", { class: "card" }, h("h2", {}, "Creation steps"), d.creation.steps.map((s) => h("div", { class: "small" }, h("b", {}, s.id), " — ", s.status, s.detail ? h("div", { class: "muted" }, s.detail) : null))) : null));
   if (mode === "dispatch" && dispatchable) dispatchPanel();
   if (mode === "edit" && !retired) editPanel();
   if (rec.status === "awaiting-confirmation") showResult();      // read the result before confirming
+  if (evParam != null) { const el = document.getElementById("ev-" + evParam); if (el) el.scrollIntoView({ block: "center" }); }
+}
+
+// ---------- legend
+const LEGEND = [
+  ["Record status", [["new", "Captured as a draft or created but not dispatched."], ["dispatched", "A task document was written to the outbox. It does not mean machine-flows has started it."], ["running", "A machine-flows run record says it is running or waiting for approval."], ["awaiting-confirmation", "The run finished. Only you mark it answered, after reading the result."], ["answered", "You confirmed the result."], ["failed", "The run failed or was cancelled."], ["retired", "Replaced or withdrawn. Read-only; nothing is ever deleted."]]],
+  ["Can I act? (bundle members)", [["ready", "A task document can be written now."], ["manual filing", "Intake is by filing: a person attaches the source records. No task document."], ["in flight", "Already dispatched; waiting on machine-flows."], ["needs you", "A finished run is waiting for your confirmation."], ["failed", "The run failed."], ["blocked", "The task document cannot be built; open the record and fix the field named."], ["held", "A person held it back from dispatch. Release it to make it ready."], ["done", "Answered."]]],
+  ["Stage state (map)", [["built", "The core has what this substage needs."], ["partial (v0)", "Only an earlier, smaller piece exists."], ["not built", "The core cannot do this yet; no actions are offered."]]],
+  ["Bundle key", [["Region", "Where the question is about."], ["Cadence", "once, daily, weekly or monthly. The news week starts on Sunday."], ["Intake", "scan runs automatically; file needs a person."], ["Origin", "Internal or external asker."], ["Sensitivity", "Who may see results."], ["Trust", "External text is untrusted and its runs wait for your approval."], ["Effort", "Depth of the run. v0 questions do not state it, so it reads unstated."]]],
+  ["Human gates", [["Vocabulary", "Only you approve taxonomy proposals."], ["Digest", "Review point 1 before Join. In v0 this is you confirming a finished run."], ["Mapping", "Field and value mapping approved before Join."], ["Join review", "Review point 2 before writes reach Stores."], ["Bay merge", "A checked bay is merged into main."], ["Publication", "Nothing is published without you."]]],
+  ["Notes", [["Comment", "A note about a record or stage. It never changes the record and never reaches a task document."], ["Star", "Your own marker."], ["Flag", "Needs attention; shows in the inbox."], ["Hold", "Keeps a draft out of dispatch. A site-level guard; the record is unchanged."], ["@name", "Mentions a person; it shows in their inbox."]]],
+];
+function viewLegend() {
+  show(h("h1", {}, "Legend"), h("p", { class: "muted" }, "What the labels on this site mean."),
+    LEGEND.map(([title, rows]) => h("section", { class: "card" }, h("h2", {}, title), h("dl", { class: "kv" }, rows.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])))));
 }
 
 // ---------- inbox and health
@@ -450,7 +546,16 @@ async function refreshBadge() {
 }
 
 // ---------- router
+// Routes run one at a time and always finish on the latest hash, so a slow view can never overwrite a newer page.
+let routing = false, routeAgain = false;
 async function route() {
+  if (routing) { routeAgain = true; return; }
+  routing = true;
+  try { do { routeAgain = false; await routeOnce(); } while (routeAgain); } finally { routing = false; }
+}
+
+async function routeOnce() {
+  clean(); guard.hash = location.hash;
   const hash = location.hash.slice(1) || "/";
   const [path, qs] = hash.split("?");
   const params = new URLSearchParams(qs || "");
@@ -466,12 +571,18 @@ async function route() {
     else if (path === "/activity") await viewActivity(params);
     else if (path === "/inbox") await viewInbox();
     else if (path === "/health") await viewHealth();
+    else if (path === "/legend") viewLegend();
     else if ((m = path.match(/^\/stage\/([a-z0-9]+)(?:\/([a-z0-9]+))?$/))) await viewStage(m[1], m[2]);
     else if (path === "/new") await viewNew(params);
     else if (path === "/records") await viewRecords(params);
-    else if ((m = path.match(/^\/r\/([A-Z]+-\d{4,})(?:\/(dispatch|edit))?$/))) await viewRecord(m[1], m[2]);
+    else if ((m = path.match(/^\/r\/([A-Z]+-\d{4,})(?:\/(dispatch|edit))?$/))) await viewRecord(m[1], m[2], params.get("event"));
     else show(h("p", {}, "Not found."));
   } catch (e) { show(errBox(e.errors || [e.message])); }
+  const h1 = $("h1", app);
+  if (h1 && path !== "/new") h1.after(h("p", { class: "fresh small muted" }, "Updated " + new Date().toLocaleTimeString() + " \u00b7 ",
+    h("a", { href: "#", onclick: (e) => { e.preventDefault(); if (guard.dirty && !confirm("Refreshing loses unsaved changes. Continue?")) return; route(); } }, "Refresh")));
+  document.title = (h1 ? h1.textContent.trim().split("\n")[0].slice(0, 60) : "Assembly") + " \u2014 Assembly Dispatch";
+  if (!/^\/stage\/[a-z0-9]+\/[a-z0-9]+$/.test(path)) app.focus({ preventScroll: true });     // screen readers land on the new page
 }
 // ---------- notes: comments, stars, flags (site-owned annotations; they never edit records)
 const actorName = () => { try { return localStorage.getItem("as-actor") || "owner"; } catch (e) { return "owner"; } };
@@ -620,7 +731,7 @@ async function viewActivity(params) {
 }
 
 // ---------- keyboard: g then a letter to go, / to search, ? for help
-const GO = { m: ["#/", "Map"], d: ["#/dispatch", "Dispatch"], b: ["#/bundles", "Bundles"], n: ["#/new", "Capture"], r: ["#/records", "Records"], i: ["#/inbox", "Inbox"], a: ["#/activity", "Activity"], h: ["#/health", "Health"] };
+const GO = { m: ["#/", "Map"], d: ["#/dispatch", "Dispatch"], b: ["#/bundles", "Bundles"], n: ["#/new", "Capture"], r: ["#/records", "Records"], i: ["#/inbox", "Inbox"], a: ["#/activity", "Activity"], h: ["#/health", "Health"], l: ["#/legend", "Legend"] };
 let gPending = false, gTimer;
 function showHelp(on) {
   const el = $("#help");
@@ -642,5 +753,10 @@ addEventListener("keydown", (e) => {
 
 try { $("#actor").value = localStorage.getItem("as-actor") || ""; } catch (e) { /* no storage */ }
 $("#actor").addEventListener("change", (e) => { try { localStorage.setItem("as-actor", e.target.value.trim().slice(0, 40)); } catch (x) { /* ignore */ } });
-addEventListener("hashchange", route);
+addEventListener("beforeunload", (e) => { if (guard.dirty) { e.preventDefault(); e.returnValue = ""; } });
+addEventListener("hashchange", () => {
+  if (location.hash === guard.hash) return;                      // a revert we triggered ourselves
+  if (guard.dirty && !confirm("You have unsaved changes. Leave this page and lose them?")) { location.hash = guard.hash; return; }
+  route();
+});
 route();
