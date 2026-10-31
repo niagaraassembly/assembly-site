@@ -1,6 +1,6 @@
 import unittest
 
-from tests.httpbase import HttpBase, Q
+from httpbase import HttpBase, Q
 
 
 class HttpOpsTest(HttpBase, unittest.TestCase):
