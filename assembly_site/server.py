@@ -79,6 +79,8 @@ def make_handler(svc: Service):
                     return self._json(200, svc.result(m.group(1)))
                 if u.path == "/api/bundles":
                     return self._json(200, svc.bundles(_day(q.get("on"))))
+                if u.path == "/api/schedule":
+                    return self._json(200, svc.schedule(_day(q.get("from")) or __import__("datetime").date.today(), int(q.get("days", "7") or 7)))
                 if u.path == "/api/workbench":
                     return self._json(200, svc.workbench(_day(q.get("on"))))
                 if u.path == "/api/stages":

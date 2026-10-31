@@ -128,8 +128,20 @@ class Service:
             name, md = handoff.build_task(rec, kind, s)
             errs = handoff.check_task(md)
             tasks.append({"step": s["id"], "file": name, "markdown": md, "errors": errs,
-                          "written": (self.outbox / name).exists()})
+                          "written": (self.outbox / name).exists(), "diff": self._diff(rec["id"], s["id"], name, md)})
         return tasks
+
+    def _diff(self, id: str, step: str, name: str, md: str) -> Optional[str]:
+        """Unified diff against the latest earlier task document for this record and step (None if there is none)."""
+        import difflib
+        prev = [p for p in self.outbox.glob("*-as-%s-%s*.md" % (id.lower(), step)) if p.name != name] if self.outbox.is_dir() else []
+        if not prev and (self.outbox / name).exists():
+            prev = [self.outbox / name]          # identical rewrite: compares with itself, so the diff is empty
+        if not prev:
+            return None
+        last = sorted(prev, key=lambda p: (p.stat().st_mtime, p.name))[-1]
+        old = last.read_text(encoding="utf-8").splitlines()
+        return "\n".join(difflib.unified_diff(old, md.splitlines(), fromfile=last.name, tofile=name, lineterm=""))
 
     # ---- capture (never dispatches)
     def _validate_new(self, kind: str, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -224,6 +236,9 @@ class Service:
                 "meaning": "Applying writes the task document to the outbox for machine-flows. It does not run it."}
 
     def dispatch(self, id: str) -> Dict[str, Any]:
+        h = self.notes_store.view(id)["hold"]
+        if h and self._load(id)["status"] == "new":
+            raise SiteError(["%s is held by %s%s. Release the hold first." % (id, h["actor"], ": " + h["reason"] if h["reason"] else "")])
         prev = self.dispatch_preview(id)
         if prev["errors"]:
             raise SiteError(prev["errors"])
@@ -382,10 +397,14 @@ class Service:
                 self.notes_store.star(target, actor, bool(body.get("on", True)))
             elif op == "flag":
                 self.notes_store.flag(target, actor, bool(body.get("on", True)), body.get("reason", ""))
+            elif op == "hold":
+                if target.startswith("stage:"):
+                    raise SiteError(["hold: only records can be held"])
+                self.notes_store.hold(target, actor, bool(body.get("on", True)), body.get("reason", ""))
             elif op == "retract":
                 self.notes_store.retract(str(body.get("id", "")), actor)
             else:
-                raise SiteError(["op: must be comment, star, flag or retract"])
+                raise SiteError(["op: must be comment, star, flag, hold or retract"])
         except NoteError as e:
             raise SiteError([str(e)])
         return self.notes(target)
@@ -406,12 +425,15 @@ class Service:
         return sorted(out, key=lambda x: x["target"])
 
     # ---- bundles (grouping rules live in the core; the site only presents and invokes)
-    READY_ORDER = ("ready", "needs-you", "failed", "in-flight", "manual", "blocked", "done")
+    READY_ORDER = ("ready", "needs-you", "failed", "in-flight", "manual", "blocked", "held", "done")
 
     def _readiness(self, rec: Dict[str, Any]) -> Dict[str, Any]:
         f, st = rec["fields"], rec["status"]
         out = {"readiness": "blocked", "why": "", "needs_approval": bool(f.get("writes")) or f.get("trust", "external") != "owner"}
-        if st == "new":
+        hold = self.notes_store.view(rec["id"])["hold"] if st == "new" else None
+        if hold:
+            out.update(readiness="held", why="Held by %s%s. Release it to make it ready." % (hold["actor"], ": " + hold["reason"] if hold["reason"] else ""))
+        elif st == "new":
             if f.get("intake") == "file":
                 out.update(readiness="manual", why="Intake is by filing: a person attaches the source records. No task document is written.")
             else:
@@ -450,7 +472,14 @@ class Service:
                 members.append(x)
                 counts[x["readiness"]] += 1
                 totals[x["readiness"]] += 1
-            out.append(dict(b, members=members, counts=counts))
+            hist = []
+            for m in members:
+                for e in self._load(m["id"])["history"]:
+                    if e["event"] in ("handoff-written", "dispatched", "handback", "confirmed", "changed", "created"):
+                        hist.append({"at": e["at"], "id": m["id"], "event": e["event"], "detail": e.get("detail", "")})
+            hist.sort(key=lambda x: x["at"])
+            hist.reverse()
+            out.append(dict(b, members=members, counts=counts, history=hist[:15]))
         return {"on": on.isoformat(), "period": p["period"], "bundles": out, "excluded": p["excluded"], "totals": totals,
                 "cap": bundlelib.CAP}
 
@@ -635,3 +664,14 @@ class Service:
         files = json.loads((d / "manifest.json").read_text(encoding="utf-8"))["files"]
         bad = [r for r, sha in files.items() if not (d / r).is_file() or self._sha(d / r) != sha]
         return {"name": name, "ok": not bad, "checked": len(files), "bad": bad}
+
+    def schedule(self, start: datetime.date, days: int = 7) -> Dict[str, Any]:
+        if not 1 <= days <= 31:
+            raise SiteError(["days: between 1 and 31"])
+        out = []
+        for n in range(days):
+            d = start + datetime.timedelta(days=n)
+            p = bundlelib.plan(self.root, KINDS, d, only_due=True)
+            out.append({"on": d.isoformat(), "weekday": d.strftime("%a"), "period": p["period"],
+                        "bundles": [{"key_id": b["key_id"], "part": b["part"], "of": b["of"], "key": b["key"], "questions": len(b["members"])} for b in p["bundles"]]})
+        return {"start": start.isoformat(), "days": out}

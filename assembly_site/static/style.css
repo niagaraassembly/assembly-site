@@ -95,3 +95,8 @@ td.qt{min-width:220px}.bar{padding-top:6px}
 
 details.fg{border:0;padding:0;margin:6px 0}details.fg>summary{font-weight:600;padding:6px 0;border-top:1px solid var(--line)}
 textarea.bulk{min-height:140px}
+
+pre.diff span.add{background:rgba(26,127,75,.18);display:block}pre.diff span.del{background:rgba(179,38,30,.16);display:block}pre.diff span{display:block}
+.pill.rd-held{color:var(--warn);border-color:var(--warn);border-style:dashed}
+.week{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}.day h2{margin:0}.day.today{border-color:var(--acc);border-width:2px}
+.dayb{display:block;text-decoration:none;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:6px;font-size:13px}.dayb:hover{border-color:var(--acc)}

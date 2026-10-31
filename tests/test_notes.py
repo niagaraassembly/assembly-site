@@ -80,5 +80,5 @@ class NotesTest(unittest.TestCase):
         self.n.star("Q-0001", "ann", True)
         self.n.flag("Q-0002", "ann", True, "r")
         idx = self.n.index()
-        self.assertEqual(idx["Q-0001"], {"comments": 1, "starred": True, "flagged": False})
+        self.assertEqual(idx["Q-0001"], {"comments": 1, "starred": True, "flagged": False, "held": False})
         self.assertTrue(idx["Q-0002"]["flagged"])

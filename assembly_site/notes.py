@@ -83,6 +83,10 @@ class Notes:
         return self._append({"op": "flag", "target": target, "actor": _actor(actor), "on": bool(on),
                              "reason": _text(reason)[:300]})
 
+    def hold(self, target: str, actor: str, on: bool, reason: str = "") -> Dict[str, Any]:
+        """Hold a record back from dispatch. Site-level guard; the Assembly record is not changed."""
+        return self._append({"op": "hold", "target": target, "actor": _actor(actor), "on": bool(on), "reason": _text(reason)[:300]})
+
     def retract(self, comment_id: str, actor: str) -> Dict[str, Any]:
         c = [e for e in self._events() if e["op"] == "comment" and e["id"] == comment_id]
         if not c:
@@ -97,6 +101,7 @@ class Notes:
         order: List[str] = []
         stars: Dict[str, bool] = {}
         flag = None
+        hold = None
         for e in self._events():
             if e["target"] != target:
                 continue
@@ -110,8 +115,10 @@ class Notes:
                 stars[e["actor"]] = bool(e.get("on"))
             elif e["op"] == "flag":
                 flag = {"actor": e["actor"], "at": e["at"], "reason": e.get("reason", "")} if e.get("on") else None
+            elif e["op"] == "hold":
+                hold = {"actor": e["actor"], "at": e["at"], "reason": e.get("reason", "")} if e.get("on") else None
         return {"target": target, "comments": [comments[i] for i in order],
-                "starred_by": sorted(a for a, on in stars.items() if on), "flag": flag}
+                "starred_by": sorted(a for a, on in stars.items() if on), "flag": flag, "hold": hold}
 
     def index(self) -> Dict[str, Dict[str, Any]]:
         """Per-target summary: {comments, starred, flagged}. Retracted comments do not count."""
@@ -124,7 +131,7 @@ class Notes:
         for t in targets:
             v = self.view(t)
             idx[t] = {"comments": sum(1 for c in v["comments"] if not c["retracted"]),
-                      "starred": bool(v["starred_by"]), "flagged": v["flag"] is not None}
+                      "starred": bool(v["starred_by"]), "flagged": v["flag"] is not None, "held": v["hold"] is not None}
         return idx
 
     def activity(self, limit: int = 50) -> List[Dict[str, Any]]:

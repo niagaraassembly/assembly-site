@@ -26,6 +26,11 @@ async function api(path, body) {
   return j;
 }
 
+const cleanups = [];
+const diffView = (d) => d === null || d === undefined ? null
+  : d === "" ? h("p", { class: "small muted" }, "Identical to the earlier task document, so writing it again changes nothing.")
+  : h("div", {}, h("p", { class: "small" }, "Changes from the earlier task document:"), h("pre", { class: "diff" }, d.split("\n").map((l) => h("span", { class: l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : "" }, l + "\n"))));
+
 let toastT;
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
 const errBox = (errs) => h("ul", { class: "err" }, errs.map((e) => h("li", {}, e)));
@@ -39,7 +44,7 @@ const kinds = async () => (kindsCache ||= await api("/api/kinds"));
 
 // ---------- Dispatch workbench: what to do next, in order
 const today = () => new Date().toLocaleDateString("en-CA");
-const READY_TEXT = { ready: "ready", "in-flight": "in flight", "needs-you": "needs you", failed: "failed", manual: "manual filing", blocked: "blocked", done: "done" };
+const READY_TEXT = { held: "held", ready: "ready", "in-flight": "in flight", "needs-you": "needs you", failed: "failed", manual: "manual filing", blocked: "blocked", done: "done" };
 const readyPill = (r) => h("span", { class: "pill rd-" + r }, READY_TEXT[r] || r);
 
 async function viewDispatch() {
@@ -51,7 +56,11 @@ async function viewDispatch() {
   const empty = (t) => h("p", { class: "muted small" }, t);
   const lane = (title, sub, n, ...body) => h("section", { class: "card lane" }, h("h2", {}, title, " ", h("span", { class: "count" }, String(n))), h("p", { class: "small muted" }, sub), body);
 
-  show(h("h1", {}, "Dispatch"),
+  const auto = (() => { try { return localStorage.getItem("as-auto") === "1"; } catch (e) { return false; } })();
+  const banner = h("div", { id: "autobanner" });
+  const poll = async () => { try { const r = await api("/api/handback", { apply: false }); if (r.log.length) banner.replaceChildren(h("div", { class: "note" }, r.log.length + " run update(s) available: ", h("button", { class: "mini primary", onclick: () => handback(hb, false) }, "Review them"))); } catch (e) { /* ignore */ } };
+  if (auto) { poll(); const t = setInterval(poll, 60000); cleanups.push(() => clearInterval(t)); }
+  show(h("h1", {}, "Dispatch"), banner,
     h("p", { class: "muted" }, "Capture saves a draft. Dispatching writes a task document to the outbox for machine-flows. Nothing is run from this site."),
     h("ol", { class: "steps" }, w.steps.map((s) => h("li", { class: s.count ? "has" : "" },
       h("a", { href: s.route || "#/dispatch", onclick: s.route ? null : (e) => { e.preventDefault(); hb.scrollIntoView({ behavior: "smooth" }); } }, h("span", { class: "lab" }, s.label), h("b", {}, String(s.count)), h("span", { class: "hint" }, s.hint))))),
@@ -70,7 +79,8 @@ async function viewDispatch() {
         w.in_flight.length ? w.in_flight.map((r) => qrow(r, open("Open")(r))) : empty("Nothing dispatched and unfinished."),
         w.runs_present ? h("p", { class: "small muted" }, "Reads run records from " + w.runs + " (read-only).")
           : h("p", { class: "note small" }, "No runs folder at " + w.runs + ". Nothing can be reported as done until machine-flows run records exist."),
-        h("div", { class: "actions" }, h("button", { onclick: () => handback(hb, false) }, "Check runs")), hb),
+        h("div", { class: "actions" }, h("button", { onclick: () => handback(hb, false) }, "Check runs"),
+          h("label", { class: "inline" }, h("input", { type: "checkbox", checked: auto, onchange: (e) => { try { localStorage.setItem("as-auto", e.target.checked ? "1" : "0"); } catch (x) { /* none */ } route(); } }), " Look for updates every minute")), hb),
       lane("Failed", "machine-flows reports these runs failed or were cancelled.", w.failed.length,
         w.failed.length ? w.failed.map((r) => qrow(r, open("Look")(r))) : empty("No failures."))),
     w.excluded.length ? h("p", { class: "small muted" }, w.excluded.length + " question(s) are not planned (retired or already answered). See Bundles.") : null);
@@ -93,13 +103,27 @@ const KEY_WHY = { region: "Where the question is about", cadence: "How often it 
 const bundleTitle = (b) => b.key_id + (b.of > 1 ? " \u00b7 part " + b.part + " of " + b.of : "");
 const keyLine = (k) => Object.keys(KEY_LABEL).map((f) => KEY_LABEL[f] + " " + (k[f] || "unstated")).join(" \u00b7 ");
 
+async function viewSchedule(params) {
+  const from = params.get("on") || today();
+  const s = await api("/api/schedule?days=7&from=" + from);
+  const shift = (n) => { const d = new Date(from + "T12:00:00"); d.setDate(d.getDate() + n); const p = new URLSearchParams(params); p.set("on", d.toLocaleDateString("en-CA")); location.hash = "#/bundles?" + p; };
+  show(h("h1", {}, "Bundles"), viewTabs("schedule", params),
+    h("p", { class: "muted" }, "Which bundles come due each day, from the questions' cadence. Click one to open it on that day."),
+    h("div", { class: "actions" }, h("button", { onclick: () => shift(-7) }, "\u2190 Earlier"), h("button", { onclick: () => { const p = new URLSearchParams(params); p.delete("on"); location.hash = "#/bundles?" + p; } }, "This week"), h("button", { onclick: () => shift(7) }, "Later \u2192")),
+    h("div", { class: "week" }, s.days.map((d) => h("section", { class: "card day" + (d.on === today() ? " today" : "") }, h("h2", {}, d.weekday + " ", h("span", { class: "muted small" }, d.on.slice(5))), h("div", { class: "small muted" }, d.period),
+      d.bundles.length ? d.bundles.map((b) => h("a", { class: "dayb", href: "#/bundles?view=bundles&on=" + d.on + "&open=" + b.key_id }, h("b", {}, b.questions + "q"), " " + [b.key.region || "no region", b.key.cadence || "unstated", b.key.intake].join(" \u00b7 ") + (b.of > 1 ? " (part " + b.part + ")" : ""))) : h("p", { class: "muted small" }, "Nothing due.")))));
+}
+
+const viewTabs = (cur, params) => h("div", { class: "tabs" }, ["bundles", "schedule"].map((t) => h("button", { class: cur === t ? "on" : "", onclick: () => { const p = new URLSearchParams(params); p.set("view", t); location.hash = "#/bundles?" + p; } }, t === "bundles" ? "Bundles" : "Week schedule")));
+
 async function viewBundles(params) {
+  if (params.get("view") === "schedule") return viewSchedule(params);
   const on = params.get("on") || today();
   const v = await api("/api/bundles?on=" + on);
   const t = v.totals;
   const setOn = (d) => { const p = new URLSearchParams(params); p.set("on", d); location.hash = "#/bundles?" + p; };
   const stat = (n, label, cls) => h("div", { class: "stat " + (cls || "") }, h("b", {}, String(n)), h("span", {}, label));
-  show(h("h1", {}, "Bundles"),
+  show(h("h1", {}, "Bundles"), viewTabs("bundles", params),
     h("p", { class: "muted" }, "Questions grouped by region and cadence. A bundle is defined by its labelled key, so one question can be a bundle. Sources do not split bundles. Different keys never mix. Grouping is a preview; dispatching is the action."),
     h("div", { class: "actions" }, h("label", { class: "inline" }, "Planning day ", h("input", { type: "date", value: on, onchange: (e) => e.target.value && setOn(e.target.value) })),
       h("button", { onclick: () => setOn(today()) }, "Today"), h("span", { class: "small muted" }, "News week " + v.period + " (Sunday starts the week)")),
@@ -111,6 +135,12 @@ async function viewBundles(params) {
   if (o) { const el = document.getElementById(o); if (el) el.scrollIntoView(); }
 }
 
+async function holdIt(id, on) {
+  let reason = "";
+  if (on) { reason = prompt("Why hold " + id + "? (shown to everyone on the site)") ; if (reason === null) return; }
+  try { await postNote(id, { op: "hold", on, reason }); toast(on ? "Held " + id : "Released " + id); route(); } catch (e) { toast(e.message); }
+}
+
 function bundleCard(b, on, expanded) {
   const picks = new Set(b.members.filter((m) => m.readiness === "ready").map((m) => m.id));
   const out = h("div", { class: "bout" });
@@ -118,7 +148,8 @@ function bundleCard(b, on, expanded) {
   const selCount = () => h("span", { class: "small" }, picks.size + " of " + b.counts.ready + " ready selected");
   const renderBar = () => bar.replaceChildren(
     b.counts.ready ? h("button", { class: "primary", disabled: !picks.size, onclick: preview }, "Preview dispatch (" + picks.size + ")") : h("span", { class: "muted small" }, "Nothing ready in this bundle."),
-    b.counts.ready ? selCount() : null);
+    b.counts.ready ? selCount() : null,
+    b.counts.ready ? h("button", { disabled: !picks.size, onclick: async () => { const r = prompt("Why hold these " + picks.size + " questions?"); if (r === null) return; for (const id of picks) await postNote(id, { op: "hold", on: true, reason: r }); toast("Held " + picks.size); route(); } }, "Hold selected") : null);
   const preview = async () => {
     try {
       const p = await api("/api/bundles/" + b.key_id + "/dispatch", { on, ids: [...picks], apply: false });
@@ -139,7 +170,7 @@ function bundleCard(b, on, expanded) {
           const md = m.tasks[0].markdown;
           const tag = (k) => (md.match(new RegExp("^" + k + ":\\s*(.*)$", "m")) || [])[1];
           return h("details", {}, h("summary", {}, h("b", {}, m.id), " ", h("code", {}, m.tasks[0].file), " ",
-            h("span", { class: "chip" }, "permission " + (tag("permission") || "?")), h("span", { class: "chip" + (tag("approval") === "none" ? "" : " partial") }, "approval " + (tag("approval") || "?"))), h("pre", {}, md));
+            h("span", { class: "chip" }, "permission " + (tag("permission") || "?")), h("span", { class: "chip" + (tag("approval") === "none" ? "" : " partial") }, "approval " + (tag("approval") || "?"))), diffView(m.tasks[0].diff), h("pre", {}, md));
         }),
         h("div", { class: "actions" }, h("label", { class: "inline" }, ok, " I have read these task documents, including approval and permission"), go, h("button", { onclick: () => out.replaceChildren() }, "Cancel"))));
     } catch (e) { out.replaceChildren(errBox(e.errors)); }
@@ -150,13 +181,17 @@ function bundleCard(b, on, expanded) {
     cb.addEventListener("change", () => { cb.checked ? picks.add(m.id) : picks.delete(m.id); renderBar(); });
     return h("tr", {}, h("td", {}, cb), h("td", {}, h("a", { href: "#/r/" + m.id }, m.id)), h("td", { class: "qt" }, m.title || "(untitled)", h("div", { class: "small muted" }, m.why)),
       h("td", {}, readyPill(m.readiness), m.needs_approval && m.readiness === "ready" ? h("span", { class: "chip partial", title: "The run will wait for your approval" }, "approval needed") : null),
-      h("td", {}, pill(m.status)), h("td", {}, h("span", { class: "chip " + (m.due ? "built" : "") }, m.due ? "due" : "not due"), " ", marks(m)));
+      h("td", {}, pill(m.status)), h("td", {}, h("span", { class: "chip " + (m.due ? "built" : "") }, m.due ? "due" : "not due"), " ", marks(m)),
+      h("td", {}, m.readiness === "blocked" ? h("a", { class: "btn mini", href: "#/r/" + m.id + "/edit" }, "Fix") : null,
+        m.readiness === "ready" ? h("button", { class: "mini", onclick: () => holdIt(m.id, true) }, "Hold") : null,
+        m.readiness === "held" ? h("button", { class: "mini", onclick: () => holdIt(m.id, false) }, "Release") : null));
   });
   return h("section", { class: "card bundle", id: b.key_id },
     h("div", { class: "bh" }, h("h2", {}, "Bundle ", h("code", {}, bundleTitle(b))), h("span", { class: "chip " + (b.due ? "built" : "") }, b.due ? "due " + on : "not due " + on), h("span", { class: "small muted" }, "period " + b.period + " \u00b7 " + b.members.length + " question" + (b.members.length === 1 ? "" : "s"))),
     h("dl", { class: "key" }, Object.keys(KEY_LABEL).map((f) => h("div", { class: "kc" + (b.key[f] ? "" : " unstated"), title: KEY_WHY[f] }, h("dt", {}, KEY_LABEL[f]), h("dd", {}, b.key[f] || "unstated")))),
-    h("div", { class: "tw" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "Question"), h("th", {}, "What it says"), h("th", {}, "Can I act?"), h("th", {}, "Status"), h("th", {}, "Schedule"))), h("tbody", {}, rows))),
-    bar, out);
+    h("div", { class: "tw" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "Question"), h("th", {}, "What it says"), h("th", {}, "Can I act?"), h("th", {}, "Status"), h("th", {}, "Schedule"), h("th", {}, ""))), h("tbody", {}, rows))),
+    bar, out,
+    b.history && b.history.length ? h("details", {}, h("summary", {}, "History (" + b.history.length + ")"), b.history.map((e) => h("div", { class: "small" }, h("span", { class: "muted" }, when(e.at) + " "), h("a", { href: "#/r/" + e.id }, e.id), " " + e.event + (e.detail ? " \u2014 " + e.detail : "")))) : null);
 }
 
 // ---------- schema-driven form
@@ -284,7 +319,7 @@ async function viewRecord(id, mode) {
       const go = h("button", { class: "primary", disabled: true, onclick: async () => { try { await api("/api/records/" + id + "/dispatch", { apply: true }); toast("Task document written"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Write to outbox");
       ok.addEventListener("change", () => (go.disabled = !ok.checked));
       panel.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Dispatch preview"), h("p", { class: "muted small" }, p.meaning),
-        p.tasks.map((t) => h("div", {}, h("p", { class: "small" }, "File: ", h("code", {}, t.file), t.written ? " (already in outbox; identical rewrite is a no-op)" : ""), h("pre", {}, t.markdown))),
+        p.tasks.map((t) => h("div", {}, h("p", { class: "small" }, "File: ", h("code", {}, t.file), t.written ? " (already in outbox; identical rewrite is a no-op)" : ""), diffView(t.diff), h("details", {}, h("summary", {}, "Full task document"), h("pre", {}, t.markdown)))),
         p.errors.length ? errBox(p.errors) : h("div", { class: "actions" }, h("label", { class: "inline" }, ok, " I have read the task and its approval/permission tags"), go)));
     } catch (e) { panel.replaceChildren(errBox(e.errors)); }
   };
@@ -370,6 +405,7 @@ async function viewRecord(id, mode) {
       h("section", { class: "card" }, h("h2", {}, "Notes"), notesPanel(id)),
       d.creation ? h("section", { class: "card" }, h("h2", {}, "Creation steps"), d.creation.steps.map((s) => h("div", { class: "small" }, h("b", {}, s.id), " — ", s.status, s.detail ? h("div", { class: "muted" }, s.detail) : null))) : null));
   if (mode === "dispatch" && dispatchable) dispatchPanel();
+  if (mode === "edit" && !retired) editPanel();
   if (rec.status === "awaiting-confirmation") showResult();      // read the result before confirming
 }
 
@@ -406,6 +442,7 @@ async function route() {
   const params = new URLSearchParams(qs || "");
   const cur = path === "/" || path.startsWith("/stage") ? "map" : path.startsWith("/r/") ? "records" : path.slice(1);
   document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("on", a.dataset.r === cur));
+  while (cleanups.length) cleanups.pop()();
   refreshBadge();
   try {
     let m;
@@ -418,7 +455,7 @@ async function route() {
     else if ((m = path.match(/^\/stage\/([a-z0-9]+)$/))) await viewStage(m[1]);
     else if (path === "/new") await viewNew(params);
     else if (path === "/records") await viewRecords(params);
-    else if ((m = path.match(/^\/r\/([A-Z]+-\d{4,})(?:\/(dispatch))?$/))) await viewRecord(m[1], m[2]);
+    else if ((m = path.match(/^\/r\/([A-Z]+-\d{4,})(?:\/(dispatch|edit))?$/))) await viewRecord(m[1], m[2]);
     else show(h("p", {}, "Not found."));
   } catch (e) { show(errBox(e.errors || [e.message])); }
 }
