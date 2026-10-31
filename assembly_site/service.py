@@ -140,7 +140,68 @@ class Service:
 
     def preview_new(self, kind: str, values: Dict[str, Any]) -> Dict[str, Any]:
         plan = self._validate_new(kind, values)
-        return {"kind": kind, "fields": values, "steps": plan["steps"], "note": "Capturing saves a draft. It does not dispatch."}
+        return {"kind": kind, "fields": values, "steps": plan["steps"], "similar": self.similar(kind, values),
+                "note": "Capturing saves a draft. It does not dispatch."}
+
+    # ---- duplicate warning (advisory; never blocks) and bulk capture
+    _STOP = {"the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "is", "are", "what", "which", "that", "this", "with", "at", "by"}
+
+    def _primary(self, kind: str) -> Optional[str]:
+        k = KINDS.get(kind)
+        for name in ("text", "name"):
+            if k and k.field(name):
+                return name
+        return None
+
+    def _tokens(self, s: str) -> set:
+        import re as _re
+        t = [x for x in _re.findall(r"[a-z0-9]+", str(s).lower()) if x not in self._STOP]
+        t = [{"street": "st", "avenue": "ave", "road": "rd"}.get(x, x) for x in t]
+        return set(t)
+
+    def similar(self, kind: str, values: Dict[str, Any], threshold: float = 0.6) -> List[Dict[str, Any]]:
+        prim = self._primary(kind)
+        mine = self._tokens(values.get(prim, "")) if prim else set()
+        if not mine:
+            return []
+        out = []
+        for r in self.records(kind):
+            if r["status"] == "retired":
+                continue
+            theirs = self._tokens(r["title"])
+            if not theirs:
+                continue
+            score = len(mine & theirs) / len(mine | theirs)
+            if score >= threshold:
+                out.append({"id": r["id"], "title": r["title"], "status": r["status"], "score": round(score, 2)})
+        return sorted(out, key=lambda x: -x["score"])
+
+    BULK_MAX = 50
+
+    def capture_bulk(self, kind: str, common: Dict[str, Any], texts: List[str], apply: bool) -> Dict[str, Any]:
+        prim = self._primary(kind)
+        if kind not in KINDS or not prim:
+            raise SiteError(["%s: bulk capture is not available for this kind" % kind])
+        if len(texts) > self.BULK_MAX:
+            raise SiteError(["at most %d lines at a time" % self.BULK_MAX])
+        errors, items = [], []
+        for n, t in enumerate(texts, 1):
+            if not str(t).strip():
+                errors.append("line %d: empty" % n)
+                continue
+            values = dict(common, **{prim: str(t).strip()})
+            plan = create.plan_create(self.root, KINDS, kind, values)
+            errors += ["line %d: %s" % (n, e) for e in plan["errors"]]
+            items.append({"line": n, "fields": values, "similar": self.similar(kind, values)})
+        if errors or not items:
+            raise SiteError(errors or ["nothing to capture"])       # nothing is minted unless every line is valid
+        if not apply:
+            return {"kind": kind, "items": items, "note": "Each line becomes its own draft. None is dispatched."}
+        created = []
+        for it in items:
+            c = self.capture(kind, it["fields"])
+            created.append({"id": c["record"]["id"], "state": c["creation"]["state"], "line": it["line"]})
+        return {"kind": kind, "created": created}
 
     def capture(self, kind: str, values: Dict[str, Any]) -> Dict[str, Any]:
         self._validate_new(kind, values)

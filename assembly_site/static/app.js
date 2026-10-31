@@ -160,9 +160,16 @@ function bundleCard(b, on, expanded) {
 }
 
 // ---------- schema-driven form
-function fieldInput(f, value) {
+async function linkOptions(kind) {
+  const out = {};
+  for (const f of kind.fields) if (f.type === "link" && f.editable !== false) out[f.name] = await api("/api/records?kind=" + f.target);
+  return out;
+}
+
+function fieldInput(f, value, opts) {
   let el;
-  if (f.type === "enum") el = h("select", { name: f.name }, h("option", { value: "" }, "—"), f.values.map((v) => h("option", { value: v, selected: v === value }, v)));
+  if (f.type === "link" && opts && opts[f.name]) el = h("select", { name: f.name }, h("option", { value: "" }, "\u2014"), opts[f.name].filter((r) => r.status !== "retired" || r.id === value).map((r) => h("option", { value: r.id, selected: r.id === value }, r.id + " \u2014 " + (r.title || "(untitled)").slice(0, 60))));
+  else if (f.type === "enum") el = h("select", { name: f.name }, h("option", { value: "" }, "—"), f.values.map((v) => h("option", { value: v, selected: v === value }, v)));
   else if (f.type === "bool") el = h("select", { name: f.name }, h("option", { value: "" }, "—"), h("option", { value: "true", selected: value === true }, "true"), h("option", { value: "false", selected: value === false }, "false"));
   else if (f.type === "list") el = h("textarea", { name: f.name, placeholder: "one per line" });
   else if (f.type === "date") el = h("input", { name: f.name, type: "date" });
@@ -174,8 +181,18 @@ function fieldInput(f, value) {
   return el;
 }
 
-function buildField(f, value) {
-  return h("div", {}, h("label", {}, f.name, f.required ? h("span", { class: "req" }, " *") : null, " ", h("span", { class: "hint" }, f.description || "")), fieldInput(f, value));
+function buildField(f, value, opts) {
+  return h("div", {}, h("label", {}, f.name, f.required ? h("span", { class: "req" }, " *") : null, " ", h("span", { class: "hint" }, f.description || "")), fieldInput(f, value, opts));
+}
+
+const ROUTING = new Set(["region", "horizon", "raised_by", "origin", "cadence", "due", "lifespan", "expires"]);
+function groupedForm(fields, values, opts) {
+  const f = (list) => list.map((x) => buildField(x, values && values[x.name], opts));
+  const req = fields.filter((x) => x.required), links = fields.filter((x) => !x.required && x.type === "link");
+  const routing = fields.filter((x) => !x.required && x.type !== "link" && ROUTING.has(x.name));
+  const adv = fields.filter((x) => !x.required && x.type !== "link" && !ROUTING.has(x.name));
+  const sect = (title, list, open) => list.length ? h("details", { class: "fg", open }, h("summary", {}, title, h("span", { class: "hint" }, " (" + list.length + ")")), f(list)) : null;
+  return h("form", {}, sect("Required", req, true), sect("Routing and schedule", routing, true), sect("Links", links, links.some((x) => values && values[x.name])), sect("Advanced", adv, adv.some((x) => values && values[x.name] != null)));
 }
 
 function readForm(form, fields) {
@@ -197,29 +214,44 @@ function readForm(form, fields) {
 async function viewNew(params) {
   const ks = await kinds();
   const kind = ks.find((k) => k.name === (params.get("kind") || "question")) || ks[0];
-  const form = h("form", {}, kind.fields.filter((f) => f.editable).map((f) => buildField(f)));
+  const bulk = params.get("mode") === "bulk" && kind.fields.some((f) => f.name === "text" || f.name === "name");
+  const opts = await linkOptions(kind);
+  const prim = kind.fields.some((f) => f.name === "text") ? "text" : "name";
+  const editable = kind.fields.filter((f) => f.editable);
+  const form = groupedForm(bulk ? editable.filter((f) => f.name !== prim) : editable, null, opts);
+  const lines = bulk ? h("textarea", { class: "bulk", placeholder: "One " + prim + " per line (up to 50)" }) : null;
   const out = h("div", {});
+  const simBox = (sim) => sim && sim.length ? h("div", { class: "note small" }, "Possible duplicates (you can still save): ", sim.map((x) => h("span", {}, h("a", { href: "#/r/" + x.id }, x.id), " " + x.title.slice(0, 50) + " (" + Math.round(x.score * 100) + "% alike) "))) : null;
   const run = async (apply) => {
     try {
-      const body = { kind: kind.name, fields: readForm(form, kind.fields), apply };
-      const r = await api("/api/captures", body);
+      if (bulk) {
+        const r = await api("/api/captures/bulk", { kind: kind.name, common: readForm(form, kind.fields), texts: lines.value.split("\n").map((x) => x.trim()).filter(Boolean), apply });
+        if (!apply) {
+          out.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Preview: " + r.items.length + " drafts"), h("p", { class: "muted small" }, r.note),
+            r.items.map((i) => h("div", { class: "row" }, h("div", { class: "t" }, h("span", { class: "muted small" }, "line " + i.line + " "), i.fields[prim], simBox(i.similar)))),
+            h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => run(true) }, "Save " + r.items.length + " drafts"))));
+        } else { toast("Saved " + r.created.length + " drafts"); location.hash = "#/records?kind=" + kind.name; }
+        return;
+      }
+      const r = await api("/api/captures", { kind: kind.name, fields: readForm(form, kind.fields), apply });
       if (!apply) {
-        out.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Preview"), h("p", { class: "muted small" }, r.note),
+        out.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Preview"), h("p", { class: "muted small" }, r.note), simBox(r.similar),
           h("dl", { class: "kv" }, Object.entries(r.fields).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, Array.isArray(v) ? v.join(", ") : String(v))])),
           h("p", { class: "small" }, "Steps: " + r.steps.map((s) => s.id + " (" + s.do + ")").join(", ")),
           h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => run(true) }, "Save draft"))));
-      } else {
-        toast("Saved " + r.record.id);
-        location.hash = "#/r/" + r.record.id;
-      }
+      } else { toast("Saved " + r.record.id); location.hash = "#/r/" + r.record.id; }
     } catch (e) { out.replaceChildren(errBox(e.errors || [e.message])); }
   };
   form.addEventListener("submit", (ev) => { ev.preventDefault(); run(false); });
+  const mode = (m) => "#/new?kind=" + kind.name + (m ? "&mode=" + m : "");
   show(h("h1", {}, "Capture"),
     h("p", { class: "muted" }, "Fields and choices come from the Assembly System's schema. Saving creates a draft with a newly minted ID; it is not dispatched."),
     h("div", { class: "tabs" }, ks.map((k) => h("button", { class: k.name === kind.name ? "on" : "", onclick: () => (location.hash = "#/new?kind=" + k.name) }, k.name))),
+    h("div", { class: "tabs" }, h("button", { class: bulk ? "" : "on", onclick: () => (location.hash = mode("")) }, "One"),
+      ks.length && kind.fields.some((f) => f.name === prim) ? h("button", { class: bulk ? "on" : "", onclick: () => (location.hash = mode("bulk")) }, "Several at once") : null),
     h("p", { class: "small muted" }, kind.description),
-    h("div", { class: "card" }, form, h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => run(false) }, "Preview"))), out);
+    h("div", { class: "card" }, bulk ? [h("label", {}, prim + "s ", h("span", { class: "hint" }, "one per line; the fields below apply to all of them")), lines] : null, form,
+      h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => run(false) }, "Preview"))), out);
 }
 
 // ---------- records list
@@ -257,9 +289,9 @@ async function viewRecord(id, mode) {
     } catch (e) { panel.replaceChildren(errBox(e.errors)); }
   };
 
-  const editPanel = () => {
+  const editPanel = async () => {
     const fields = kind.fields.filter((f) => f.editable);
-    const form = h("form", {}, fields.map((f) => buildField(f, rec.fields[f.name])));
+    const form = groupedForm(fields, rec.fields, await linkOptions(kind));
     const out = h("div");
     const collect = () => {
       const now = readForm(form, fields), set = {}, unset = [];

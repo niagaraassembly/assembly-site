@@ -92,3 +92,6 @@ td.qt{min-width:220px}.bar{padding-top:6px}
 .res pre{max-height:360px}.res h3{font-size:14px;margin:10px 0 4px}
 .sev{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mute);margin-right:6px}
 .sev.review{background:var(--warn)}.sev.failed,.sev.partial{background:var(--bad)}.sev.aging{background:var(--acc)}
+
+details.fg{border:0;padding:0;margin:6px 0}details.fg>summary{font-weight:600;padding:6px 0;border-top:1px solid var(--line)}
+textarea.bulk{min-height:140px}

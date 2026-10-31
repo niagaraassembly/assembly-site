@@ -128,6 +128,11 @@ def make_handler(svc: Service):
                 return self._err(400, "body must be a JSON object")
             p = urlparse(self.path).path
             try:
+                if p == "/api/captures/bulk":
+                    texts = body.get("texts") or []
+                    if not isinstance(texts, list):
+                        raise SiteError(["texts: must be a list of lines"])
+                    return self._json(201 if body.get("apply") else 200, svc.capture_bulk(body.get("kind", ""), body.get("common") or {}, [str(t) for t in texts], bool(body.get("apply"))))
                 if p == "/api/captures":
                     kind, values = body.get("kind", ""), body.get("fields") or {}
                     if body.get("apply"):
