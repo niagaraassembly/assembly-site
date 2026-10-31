@@ -15,7 +15,9 @@ import re
 
 from . import core, stages as stagelib
 from .notes import NoteError, Notes
-from .core import KINDS, change, create, handback, handoff, records
+import datetime
+
+from .core import KINDS, bundle as bundlelib, change, create, handback, handoff, records
 
 # Fields the site never lets a person edit directly (provenance and links managed by actions).
 EDIT_LOCKED = {"supersedes"}
@@ -331,3 +333,118 @@ class Service:
             if n["starred"] and self._target_title(target) is not None:
                 out.append({"target": target, "title": self._target_title(target), "flagged": n["flagged"], "comments": n["comments"]})
         return sorted(out, key=lambda x: x["target"])
+
+    # ---- bundles (grouping rules live in the core; the site only presents and invokes)
+    READY_ORDER = ("ready", "needs-you", "failed", "in-flight", "manual", "blocked", "done")
+
+    def _readiness(self, rec: Dict[str, Any]) -> Dict[str, Any]:
+        f, st = rec["fields"], rec["status"]
+        out = {"readiness": "blocked", "why": "", "needs_approval": bool(f.get("writes")) or f.get("trust", "external") != "owner"}
+        if st == "new":
+            if f.get("intake") == "file":
+                out.update(readiness="manual", why="Intake is by filing: a person attaches the source records. No task document is written.")
+            else:
+                try:
+                    tasks = self._tasks(rec)
+                    errs = [e for t in tasks for e in t["errors"]]
+                    out.update(readiness="blocked", why="; ".join(errs)) if errs or not tasks else out.update(readiness="ready", why="Task document can be written.")
+                    if not tasks and not errs:
+                        out["why"] = "No handoff step applies."
+                except ValueError as e:
+                    out.update(readiness="blocked", why=str(e))
+        elif st in ("dispatched", "running"):
+            out.update(readiness="in-flight", why="Task document written; waiting on machine-flows.")
+        elif st == "awaiting-confirmation":
+            out.update(readiness="needs-you", why="Run finished. Read the result and confirm.")
+        elif st == "failed":
+            out.update(readiness="failed", why="machine-flows reports the run failed or was cancelled.")
+        elif st == "answered":
+            out.update(readiness="done", why="Answered.")
+        return out
+
+    def bundles(self, on: Optional[datetime.date] = None) -> Dict[str, Any]:
+        on = on or datetime.date.today()
+        p = bundlelib.plan(self.root, KINDS, on)
+        idx = self.notes_store.index()
+        out, totals = [], {k: 0 for k in self.READY_ORDER}
+        for b in p["bundles"]:
+            members, counts = [], {k: 0 for k in self.READY_ORDER}
+            for m in b["members"]:
+                rec = self._load(m["id"])
+                row = self._row(rec)
+                n = idx.get(m["id"], {})
+                x = dict(m, title=row["title"], status=rec["status"], lens=rec["fields"].get("lens"), created=row["created"],
+                         starred=n.get("starred", False), flagged=n.get("flagged", False), notes=n.get("comments", 0),
+                         **self._readiness(rec))
+                members.append(x)
+                counts[x["readiness"]] += 1
+                totals[x["readiness"]] += 1
+            out.append(dict(b, members=members, counts=counts))
+        return {"on": on.isoformat(), "period": p["period"], "bundles": out, "excluded": p["excluded"], "totals": totals,
+                "cap": bundlelib.CAP}
+
+    def _bundle(self, key_id: str, on) -> Dict[str, Any]:
+        for b in self.bundles(on)["bundles"]:
+            if b["key_id"] == key_id:
+                return b
+        raise SiteError(["%s: no such bundle on %s" % (key_id, (on or datetime.date.today()).isoformat())], 404)
+
+    def bundle_dispatch(self, key_id: str, on, apply: bool, ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        b = self._bundle(key_id, on)
+        ready = [m["id"] for m in b["members"] if m["readiness"] == "ready"]
+        if ids is not None:
+            unknown = [i for i in ids if i not in {m["id"] for m in b["members"]}]
+            if unknown:
+                raise SiteError(["%s: not in this bundle" % i for i in unknown])
+            ready = [i for i in ready if i in ids]
+        if not ready:
+            raise SiteError(["nothing ready to dispatch in this bundle"])
+        if not apply:
+            return {"key_id": key_id, "outbox": str(self.outbox),
+                    "meaning": "Applying writes one task document per question to the outbox for machine-flows. It does not run them. "
+                               "(v0 has one task per question; a per-bundle dispatch record comes with Plan 2.)",
+                    "members": [dict(self.dispatch_preview(i), needs_approval=self._readiness(self._load(i))["needs_approval"]) for i in ready]}
+        results = []
+        for i in ready:
+            try:
+                self.dispatch(i)
+                results.append({"id": i, "ok": True})
+            except SiteError as e:
+                results.append({"id": i, "ok": False, "errors": e.errors})
+        return {"key_id": key_id, "results": results}
+
+    # ---- the Dispatch workbench: what to do next, in order
+    def workbench(self, on: Optional[datetime.date] = None) -> Dict[str, Any]:
+        v = self.bundles(on)
+        rows = {r["id"]: r for r in self.records("question")}
+        by = lambda st: [r for r in rows.values() if r["status"] == st]
+        ready_bundles = [b for b in v["bundles"] if b["counts"]["ready"]]
+        needs, failed = by("awaiting-confirmation"), by("failed")
+        flight = by("dispatched") + by("running")
+        t = v["totals"]
+        nxt = []
+        if needs:
+            nxt.append({"kind": "review", "label": "Review %d finished run%s" % (len(needs), "" if len(needs) == 1 else "s"),
+                        "detail": "machine-flows says done. Only you mark a question answered.", "cta": "Review result", "route": "#/r/" + needs[0]["id"]})
+        if failed:
+            nxt.append({"kind": "failed", "label": "Look at %d failed run%s" % (len(failed), "" if len(failed) == 1 else "s"),
+                        "detail": "Fix the question or dispatch again.", "cta": "Open failed run", "route": "#/r/" + failed[0]["id"]})
+        if ready_bundles:
+            nxt.append({"kind": "dispatch-ready", "label": "Dispatch %d ready question%s in %d bundle%s" % (
+                t["ready"], "" if t["ready"] == 1 else "s", len(ready_bundles), "" if len(ready_bundles) == 1 else "s"),
+                "detail": "Preview the task documents, then write them to the outbox.", "cta": "Open bundles", "route": "#/bundles"})
+        if flight:
+            nxt.append({"kind": "track", "label": "Check runs for %d dispatched question%s" % (len(flight), "" if len(flight) == 1 else "s"),
+                        "detail": "Reads machine-flows run records (read-only).", "cta": "Check runs", "route": None})
+        if not nxt:
+            nxt.append({"kind": "capture", "label": "Nothing to do. Capture a question.", "detail": "Saving makes a draft; it does not dispatch.", "cta": "Capture question", "route": "#/new?kind=question"})
+        steps = [
+            {"key": "capture", "label": "1 Capture", "count": len([r for r in rows.values() if r["status"] != "retired"]), "hint": "questions", "route": "#/new?kind=question"},
+            {"key": "bundle", "label": "2 Bundle", "count": len(v["bundles"]), "hint": "bundles", "route": "#/bundles"},
+            {"key": "dispatch", "label": "3 Dispatch", "count": t["ready"], "hint": "ready", "route": "#/bundles"},
+            {"key": "track", "label": "4 Track", "count": len(flight), "hint": "in flight", "route": None},
+            {"key": "review", "label": "5 Review", "count": len(needs) + len(failed), "hint": "need you", "route": "#/records?status=awaiting-confirmation"},
+        ]
+        return {"on": v["on"], "next": nxt, "steps": steps, "ready_bundles": ready_bundles, "needs_you": needs, "failed": failed,
+                "in_flight": flight, "runs": str(self.runs), "runs_present": self.runs.is_dir(), "outbox": str(self.outbox),
+                "excluded": v["excluded"]}

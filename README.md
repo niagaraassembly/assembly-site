@@ -14,6 +14,12 @@ machine-flows), `ASSEMBLY_RUNS` (machine-flows run records, read-only).
 
 ## What it does
 
+- **Dispatch workbench**: a five-step strip (Capture, Bundle, Dispatch, Track, Review) with counts, a prioritised "Next up" list
+  (finished runs, failures, ready bundles, runs to check), and four labelled lanes: Ready, Needs you, In flight, Failed.
+- **Bundles**: questions grouped by the core's bundle key (region, cadence, intake, origin, sensitivity, trust, effort; cap 12),
+  each key part labelled, each question marked ready / manual / in flight / needs you / failed with the reason, due or not due on the
+  chosen day. Select ready questions, preview the exact task documents (permission and approval shown), tick to confirm, then write.
+  v0 writes one task document per question; a per-bundle dispatch record comes with Plan 2. Needs `assembly/bundle.py` in the core.
 - **Map** (home): every stage and substage of the flow from the Dispatch briefing (Regional through Line), with the six named
   human gates. Each substage reads *built*, *partial (v0)* or *not built*. State is probed from the core checkout (a substage flips
   to built when the core file it needs appears, e.g. `assembly/resolve.py`), so the site cannot claim work the core cannot do.

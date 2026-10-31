@@ -37,34 +37,43 @@ const LABEL = { new: "Drafts / new", dispatched: "Dispatched", running: "Running
 let kindsCache;
 const kinds = async () => (kindsCache ||= await api("/api/kinds"));
 
-// ---------- Dispatch home
+// ---------- Dispatch workbench: what to do next, in order
+const today = () => new Date().toLocaleDateString("en-CA");
+const READY_TEXT = { ready: "ready", "in-flight": "in flight", "needs-you": "needs you", failed: "failed", manual: "manual filing", blocked: "blocked", done: "done" };
+const readyPill = (r) => h("span", { class: "pill rd-" + r }, READY_TEXT[r] || r);
+
 async function viewDispatch() {
-  const s = await api("/api/summary");
+  const w = await api("/api/workbench?on=" + today());
   const hb = h("div", { id: "hb" });
-  const list = (rows, empty, action) => rows.length
-    ? rows.map((r) => h("div", { class: "row" },
-        h("div", { class: "t" }, h("a", { href: "#/r/" + r.id }, r.id), " ", pill(r.status), " ", marks(r), h("div", { class: "small muted" }, r.title || "(untitled)")),
-        action ? action(r) : null))
-    : h("p", { class: "muted" }, empty);
-  const dispatchBtn = (r) => h("a", { class: "btn primary", href: "#/r/" + r.id + "/dispatch" }, "Review & dispatch");
-  const reviewBtn = (r) => h("a", { class: "btn", href: "#/r/" + r.id }, r.status === "awaiting-confirmation" ? "Review result" : "Open");
-  show(
-    h("h1", {}, "Dispatch"),
-    h("p", { class: "muted" }, "Capture saves a draft. Dispatch is a separate step: it writes a task document to the outbox for machine-flows. Nothing is run from this site."),
-    h("div", { class: "pipe" }, s.pipeline.map((st) => h("a", { href: "#/records?status=" + st }, h("b", {}, s.by_status[st] || 0), h("span", {}, LABEL[st] || st)))),
+  const qrow = (r, btn) => h("div", { class: "row" },
+    h("div", { class: "t" }, h("a", { href: "#/r/" + r.id }, r.id), " ", pill(r.status), " ", marks(r), h("div", { class: "small muted" }, r.title || "(untitled)")), btn);
+  const open = (label) => (r) => h("a", { class: "btn", href: "#/r/" + r.id }, label);
+  const empty = (t) => h("p", { class: "muted small" }, t);
+  const lane = (title, sub, n, ...body) => h("section", { class: "card lane" }, h("h2", {}, title, " ", h("span", { class: "count" }, String(n))), h("p", { class: "small muted" }, sub), body);
+
+  show(h("h1", {}, "Dispatch"),
+    h("p", { class: "muted" }, "Capture saves a draft. Dispatching writes a task document to the outbox for machine-flows. Nothing is run from this site."),
+    h("ol", { class: "steps" }, w.steps.map((s) => h("li", { class: s.count ? "has" : "" },
+      h("a", { href: s.route || "#/dispatch", onclick: s.route ? null : (e) => { e.preventDefault(); hb.scrollIntoView({ behavior: "smooth" }); } }, h("span", { class: "lab" }, s.label), h("b", {}, String(s.count)), h("span", { class: "hint" }, s.hint))))),
+    h("section", { class: "card nextup" }, h("h2", {}, "Next up"),
+      w.next.map((n, i) => h("div", { class: "next" + (i === 0 ? " first" : "") },
+        h("div", {}, h("b", {}, n.label), h("div", { class: "small muted" }, n.detail)),
+        n.route ? h("a", { class: "btn" + (i === 0 ? " primary" : ""), href: n.route }, n.cta) : h("button", { class: i === 0 ? "primary" : "", onclick: () => handback(hb, false) }, n.cta)))),
     h("div", { class: "grid" },
-      h("section", { class: "card" }, h("h2", {}, "Drafts ready to dispatch"),
-        list(s.drafts, "No drafts. Capture a question to start.", dispatchBtn),
-        h("div", { class: "actions" }, h("a", { class: "btn", href: "#/new" }, "Capture new"))),
-      h("section", { class: "card" }, h("h2", {}, "Needs you"),
-        list(s.attention, "Nothing waiting on you.", reviewBtn)),
-      h("section", { class: "card" }, h("h2", {}, "In flight"),
-        list(s.in_flight, "Nothing dispatched and unfinished.", reviewBtn),
-        h("p", { class: "small muted" }, "In flight means a task document was written to the outbox. It does not mean machine-flows has started it.")),
-      h("section", { class: "card" }, h("h2", {}, "Handback from machine-flows"),
-        s.runs_present ? h("p", { class: "small muted" }, "Reads run records from " + s.runs + " (read-only).")
-          : h("p", { class: "note small" }, "No runs folder at " + s.runs + ". Nothing can be reported as done until machine-flows run records exist."),
-        h("div", { class: "actions" }, h("button", { onclick: () => handback(hb, false) }, "Check runs")), hb)));
+      lane("Ready to dispatch", "Grouped by bundle. Preview the task documents, then write them.", w.ready_bundles.reduce((n, b) => n + b.counts.ready, 0),
+        w.ready_bundles.length ? w.ready_bundles.map((b) => h("div", { class: "row" },
+          h("div", { class: "t" }, h("b", {}, bundleTitle(b)), h("div", { class: "small muted" }, keyLine(b.key))),
+          h("a", { class: "btn primary", href: "#/bundles?open=" + b.key_id }, "Dispatch " + b.counts.ready))) : empty("Nothing is ready. Capture a question, or see Bundles.")),
+      lane("Needs you", "Finished runs wait for your confirmation. Only you mark a question answered.", w.needs_you.length,
+        w.needs_you.length ? w.needs_you.map((r) => qrow(r, open("Review result")(r))) : empty("Nothing waiting on you.")),
+      lane("In flight", "A task document was written. It does not mean machine-flows has started it.", w.in_flight.length,
+        w.in_flight.length ? w.in_flight.map((r) => qrow(r, open("Open")(r))) : empty("Nothing dispatched and unfinished."),
+        w.runs_present ? h("p", { class: "small muted" }, "Reads run records from " + w.runs + " (read-only).")
+          : h("p", { class: "note small" }, "No runs folder at " + w.runs + ". Nothing can be reported as done until machine-flows run records exist."),
+        h("div", { class: "actions" }, h("button", { onclick: () => handback(hb, false) }, "Check runs")), hb),
+      lane("Failed", "machine-flows reports these runs failed or were cancelled.", w.failed.length,
+        w.failed.length ? w.failed.map((r) => qrow(r, open("Look")(r))) : empty("No failures."))),
+    w.excluded.length ? h("p", { class: "small muted" }, w.excluded.length + " question(s) are not planned (retired or already answered). See Bundles.") : null);
 }
 
 async function handback(box, apply) {
@@ -75,6 +84,79 @@ async function handback(box, apply) {
       r.log.length && !apply ? h("div", { class: "actions" }, h("button", { class: "primary", onclick: async () => { await handback(box, true); toast("Recorded"); } }, "Record these")) : null,
       apply ? h("div", { class: "actions" }, h("button", { onclick: route }, "Refresh")) : null);
   } catch (e) { box.replaceChildren(errBox(e.errors)); }
+}
+
+// ---------- Bundles
+const KEY_LABEL = { region: "Region", cadence: "Cadence", intake: "Intake", origin: "Origin", sensitivity: "Sensitivity", trust: "Trust", effort: "Effort" };
+const KEY_WHY = { region: "Where the question is about", cadence: "How often it runs", intake: "Scan runs automatically; file needs a person", origin: "Internal or external asker",
+  sensitivity: "Who may see results", trust: "External text is untrusted and needs approval", effort: "Depth of the run (not stated in v0)" };
+const bundleTitle = (b) => b.key_id + (b.of > 1 ? " \u00b7 part " + b.part + " of " + b.of : "");
+const keyLine = (k) => Object.keys(KEY_LABEL).map((f) => KEY_LABEL[f] + " " + (k[f] || "unstated")).join(" \u00b7 ");
+
+async function viewBundles(params) {
+  const on = params.get("on") || today();
+  const v = await api("/api/bundles?on=" + on);
+  const t = v.totals;
+  const setOn = (d) => { const p = new URLSearchParams(params); p.set("on", d); location.hash = "#/bundles?" + p; };
+  const stat = (n, label, cls) => h("div", { class: "stat " + (cls || "") }, h("b", {}, String(n)), h("span", {}, label));
+  show(h("h1", {}, "Bundles"),
+    h("p", { class: "muted" }, "Questions grouped by region and cadence. A bundle is defined by its labelled key, so one question can be a bundle. Sources do not split bundles. Different keys never mix. Grouping is a preview; dispatching is the action."),
+    h("div", { class: "actions" }, h("label", { class: "inline" }, "Planning day ", h("input", { type: "date", value: on, onchange: (e) => e.target.value && setOn(e.target.value) })),
+      h("button", { onclick: () => setOn(today()) }, "Today"), h("span", { class: "small muted" }, "News week " + v.period + " (Sunday starts the week)")),
+    h("div", { class: "stats" }, stat(v.bundles.length, "bundles"), stat(t.ready, "ready to dispatch", "ok"), stat(t["in-flight"], "in flight"), stat(t["needs-you"], "need you", "warn"),
+      stat(t.failed, "failed", "bad"), stat(t.manual + t.blocked, "manual / blocked"), stat(v.excluded.length, "not planned")),
+    v.bundles.length ? v.bundles.map((b) => bundleCard(b, on, params.get("open") === b.key_id)) : h("section", { class: "card" }, h("p", { class: "muted" }, "No questions to bundle."), h("a", { class: "btn primary", href: "#/new?kind=question" }, "Capture a question")),
+    v.excluded.length ? h("section", { class: "card" }, h("h2", {}, "Not planned"), v.excluded.map((x) => h("div", { class: "row" }, h("a", { href: "#/r/" + x.id }, x.id), h("span", { class: "small muted" }, x.reason)))) : null);
+  const o = params.get("open");
+  if (o) { const el = document.getElementById(o); if (el) el.scrollIntoView(); }
+}
+
+function bundleCard(b, on, expanded) {
+  const picks = new Set(b.members.filter((m) => m.readiness === "ready").map((m) => m.id));
+  const out = h("div", { class: "bout" });
+  const bar = h("div", { class: "actions bar" });
+  const selCount = () => h("span", { class: "small" }, picks.size + " of " + b.counts.ready + " ready selected");
+  const renderBar = () => bar.replaceChildren(
+    b.counts.ready ? h("button", { class: "primary", disabled: !picks.size, onclick: preview }, "Preview dispatch (" + picks.size + ")") : h("span", { class: "muted small" }, "Nothing ready in this bundle."),
+    b.counts.ready ? selCount() : null);
+  const preview = async () => {
+    try {
+      const p = await api("/api/bundles/" + b.key_id + "/dispatch", { on, ids: [...picks], apply: false });
+      const ok = h("input", { type: "checkbox" });
+      const go = h("button", { class: "primary", disabled: true, onclick: async () => {
+        go.disabled = true;
+        try {
+          const r = await api("/api/bundles/" + b.key_id + "/dispatch", { on, ids: [...picks], apply: true });
+          out.replaceChildren(h("div", { class: "card inner" }, h("h2", {}, "Dispatch result"),
+            r.results.map((x) => h("div", { class: "row" }, h("a", { href: "#/r/" + x.id }, x.id), x.ok ? h("span", { class: "pill answered" }, "task document written") : errBox(x.errors))),
+            h("div", { class: "actions" }, h("button", { class: "primary", onclick: route }, "Refresh bundles"))));
+          toast("Dispatched " + r.results.filter((x) => x.ok).length);
+        } catch (e) { out.prepend(errBox(e.errors)); go.disabled = false; }
+      } }, "Write " + p.members.length + " task document" + (p.members.length === 1 ? "" : "s"));
+      ok.addEventListener("change", () => (go.disabled = !ok.checked));
+      out.replaceChildren(h("div", { class: "card inner" }, h("h2", {}, "Dispatch preview"), h("p", { class: "small muted" }, p.meaning),
+        p.members.map((m) => {
+          const md = m.tasks[0].markdown;
+          const tag = (k) => (md.match(new RegExp("^" + k + ":\\s*(.*)$", "m")) || [])[1];
+          return h("details", {}, h("summary", {}, h("b", {}, m.id), " ", h("code", {}, m.tasks[0].file), " ",
+            h("span", { class: "chip" }, "permission " + (tag("permission") || "?")), h("span", { class: "chip" + (tag("approval") === "none" ? "" : " partial") }, "approval " + (tag("approval") || "?"))), h("pre", {}, md));
+        }),
+        h("div", { class: "actions" }, h("label", { class: "inline" }, ok, " I have read these task documents, including approval and permission"), go, h("button", { onclick: () => out.replaceChildren() }, "Cancel"))));
+    } catch (e) { out.replaceChildren(errBox(e.errors)); }
+  };
+  renderBar();
+  const rows = b.members.map((m) => {
+    const cb = h("input", { type: "checkbox", checked: m.readiness === "ready", disabled: m.readiness !== "ready", "aria-label": "include " + m.id });
+    cb.addEventListener("change", () => { cb.checked ? picks.add(m.id) : picks.delete(m.id); renderBar(); });
+    return h("tr", {}, h("td", {}, cb), h("td", {}, h("a", { href: "#/r/" + m.id }, m.id)), h("td", { class: "qt" }, m.title || "(untitled)", h("div", { class: "small muted" }, m.why)),
+      h("td", {}, readyPill(m.readiness), m.needs_approval && m.readiness === "ready" ? h("span", { class: "chip partial", title: "The run will wait for your approval" }, "approval needed") : null),
+      h("td", {}, pill(m.status)), h("td", {}, h("span", { class: "chip " + (m.due ? "built" : "") }, m.due ? "due" : "not due"), " ", marks(m)));
+  });
+  return h("section", { class: "card bundle", id: b.key_id },
+    h("div", { class: "bh" }, h("h2", {}, "Bundle ", h("code", {}, bundleTitle(b))), h("span", { class: "chip " + (b.due ? "built" : "") }, b.due ? "due " + on : "not due " + on), h("span", { class: "small muted" }, "period " + b.period + " \u00b7 " + b.members.length + " question" + (b.members.length === 1 ? "" : "s"))),
+    h("dl", { class: "key" }, Object.keys(KEY_LABEL).map((f) => h("div", { class: "kc" + (b.key[f] ? "" : " unstated"), title: KEY_WHY[f] }, h("dt", {}, KEY_LABEL[f]), h("dd", {}, b.key[f] || "unstated")))),
+    h("div", { class: "tw" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "Question"), h("th", {}, "What it says"), h("th", {}, "Can I act?"), h("th", {}, "Status"), h("th", {}, "Schedule"))), h("tbody", {}, rows))),
+    bar, out);
 }
 
 // ---------- schema-driven form
@@ -242,6 +324,7 @@ async function route() {
     let m;
     if (path === "/") await viewMap();
     else if (path === "/dispatch") await viewDispatch();
+    else if (path === "/bundles") await viewBundles(params);
     else if (path === "/activity") await viewActivity();
     else if ((m = path.match(/^\/stage\/([a-z0-9]+)$/))) await viewStage(m[1]);
     else if (path === "/new") await viewNew(params);

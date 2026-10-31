@@ -21,6 +21,16 @@ _ID = r"([A-Z]+-\d{4,})"
 _HOST_OK = re.compile(r"^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$")
 
 
+def _day(s):
+    import datetime
+    if not s:
+        return None
+    try:
+        return datetime.date.fromisoformat(str(s))
+    except ValueError:
+        raise SiteError(["on: must be a date like 2026-10-28"])
+
+
 def make_handler(svc: Service):
     class H(BaseHTTPRequestHandler):
         server_version = "AssemblySite/0"
@@ -60,6 +70,10 @@ def make_handler(svc: Service):
                     return self._json(200, svc.kinds())
                 if u.path == "/api/records":
                     return self._json(200, svc.records(q.get("kind"), q.get("status"), q.get("starred") == "1"))
+                if u.path == "/api/bundles":
+                    return self._json(200, svc.bundles(_day(q.get("on"))))
+                if u.path == "/api/workbench":
+                    return self._json(200, svc.workbench(_day(q.get("on"))))
                 if u.path == "/api/stages":
                     return self._json(200, {"stages": svc.stages(), "gates": svc.gates()})
                 m = re.fullmatch(r"/api/stages/([a-z0-9]+)", u.path)
@@ -114,6 +128,9 @@ def make_handler(svc: Service):
                     return self._json(200, svc.preview_new(kind, values))
                 if p == "/api/handback":
                     return self._json(200, svc.handback(bool(body.get("apply"))))
+                m = re.fullmatch(r"/api/bundles/(bk-[0-9a-f]{8})/dispatch", p)
+                if m:
+                    return self._json(200, svc.bundle_dispatch(m.group(1), _day(body.get("on")), bool(body.get("apply")), body.get("ids")))
                 if p == "/api/notes":
                     return self._json(200, svc.post_note(str(body.get("target", "")), body))
                 m = re.fullmatch(r"/api/records/" + _ID + r"/(dispatch|set|retire|confirm)", p)
