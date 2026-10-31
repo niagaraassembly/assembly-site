@@ -16,12 +16,19 @@ import re
 from . import core, stages as stagelib
 from .notes import NoteError, Notes
 import datetime
+import hashlib
+import shutil
 
+from .core import lint as lint_mod
 from .core import KINDS, bundle as bundlelib, change, create, handback, handoff, records
 
 # Fields the site never lets a person edit directly (provenance and links managed by actions).
 EDIT_LOCKED = {"supersedes"}
 PIPELINE = ["new", "dispatched", "running", "awaiting-confirmation", "answered", "failed", "retired"]
+
+
+def targetroute(t: str) -> str:
+    return "#/stage/" + t[6:].split(".")[0] if t.startswith("stage:") else "#/r/" + t
 
 
 class SiteError(ValueError):
@@ -162,7 +169,10 @@ class Service:
         rec = self._load(id)
         c = self._creation(id)
         if c and any(s["status"] == "held" for s in c["steps"]):
-            create.release_held(self.root, KINDS, id, self.outbox)
+            c2 = create.release_held(self.root, KINDS, id, self.outbox)
+            bad = [st["detail"] for st in c2["steps"] if st["status"] in ("failed", "pending")]
+            if bad:
+                raise SiteError(["task document was not written (%s). The record stays a draft you can resume." % "; ".join(bad)])
         else:
             kind, steps = self._steps(rec)
             for s in steps:
@@ -448,3 +458,119 @@ class Service:
         return {"on": v["on"], "next": nxt, "steps": steps, "ready_bundles": ready_bundles, "needs_you": needs, "failed": failed,
                 "in_flight": flight, "runs": str(self.runs), "runs_present": self.runs.is_dir(), "outbox": str(self.outbox),
                 "excluded": v["excluded"]}
+
+    # ---- result (read-only view of the latest machine-flows run)
+    def result(self, id: str) -> Dict[str, Any]:
+        self._load(id)
+        return {"id": id, "runs": str(self.runs), "runs_present": self.runs.is_dir(),
+                "result": handback.run_result(self.runs, id)}
+
+    # ---- inbox: everything that wants the operator, most pressing first
+    AGING_DAYS = 3
+    _INBOX_ORDER = {"review": 0, "failed": 1, "partial": 2, "aging": 3, "flagged": 4}
+
+    def inbox(self) -> Dict[str, Any]:
+        items: List[Dict[str, Any]] = []
+        now = datetime.datetime.now().astimezone()
+        idx = self.notes_store.index()
+        for r in self.records():
+            last = (r["last"] or {}).get("at") or r["created"]
+            base = {"id": r["id"], "title": r["title"], "route": "#/r/" + r["id"], "at": last}
+            if r["status"] == "awaiting-confirmation":
+                items.append(dict(base, kind="review", detail="Run finished. Read the result, then confirm."))
+            elif r["status"] == "failed":
+                items.append(dict(base, kind="failed", detail="The run failed or was cancelled."))
+            elif r["status"] in ("dispatched", "running"):
+                try:
+                    age = now - datetime.datetime.fromisoformat(last)
+                except ValueError:
+                    age = datetime.timedelta(0)
+                if age >= datetime.timedelta(days=self.AGING_DAYS):
+                    items.append(dict(base, kind="aging", detail="No change for %d days since the task document was written." % age.days))
+            if r["creation"] == "partial":
+                items.append(dict(base, kind="partial", detail="Creation is partial. Resume it to finish the remaining steps."))
+        for target, n in idx.items():
+            if n["flagged"]:
+                title = self._target_title(target)
+                if title is not None:
+                    v = self.notes_store.view(target)
+                    items.append({"kind": "flagged", "id": target, "title": title, "route": targetroute(target),
+                                  "detail": "Flagged by %s: %s" % (v["flag"]["actor"], v["flag"]["reason"] or "(no reason)"), "at": v["flag"]["at"]})
+        items.sort(key=lambda i: (self._INBOX_ORDER[i["kind"]], i["at"]))
+        return {"items": items, "count": len(items)}
+
+    # ---- resume a partial creation; supersede
+    def resume(self, id: str) -> Dict[str, Any]:
+        c = self._creation(id)
+        if not c or c["state"] != "partial":
+            raise SiteError(["%s: no partial creation to resume" % id])
+        self._guard_create(lambda: create.resume_create(self.root, KINDS, id, self.outbox))
+        return self.record(id)
+
+    def _guard_create(self, fn):
+        try:
+            return fn()
+        except (create.CreationError, OSError, ValueError) as e:
+            raise SiteError([str(e)])
+
+    def supersede(self, old: str, by: str, apply: bool, actor: str = "owner (site)") -> Dict[str, Any]:
+        self._guard(lambda: change.check_supersede(self.root, KINDS, old, by))
+        if not apply:
+            return {"would": "supersede", "old": old, "by": by}
+        self._guard(lambda: change.supersede(self.root, KINDS, old, by, actor=actor))
+        return self.record(old)
+
+    # ---- health and backups
+    def health(self) -> Dict[str, Any]:
+        errors, warnings = lint_mod.lint(self.root, KINDS)
+        return {"errors": errors, "warnings": warnings, "backups": self.backups(), "root": str(self.root), "data": str(self.data)}
+
+    _BK = re.compile(r"^\d{8}-\d{6}(?:-\d+)?$")
+
+    def _sha(self, p: Path) -> str:
+        h = hashlib.sha256()
+        h.update(p.read_bytes())
+        return h.hexdigest()
+
+    def backup(self) -> Dict[str, Any]:
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        base = self.data / "backups"
+        name, n = stamp, 0
+        while (base / name).exists():
+            n += 1
+            name = "%s-%d" % (stamp, n)
+        dest = base / name
+        manifest: Dict[str, str] = {}
+        sources = [("records/" + d, self.root / d) for d in ("profiles", "creations", "registry")] + [("site/annotations.jsonl", self.data / "annotations.jsonl")]
+        for rel, src in sources:
+            files = [src] if src.is_file() else (sorted(x for x in src.rglob("*") if x.is_file()) if src.is_dir() else [])
+            for f in files:
+                if f.name.startswith(".") or f.suffix == ".lock":
+                    continue
+                r = rel if src.is_file() else rel + "/" + str(f.relative_to(src))
+                (dest / r).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dest / r)
+                manifest[r] = self._sha(dest / r)
+        (dest / "manifest.json").write_text(json.dumps({"created": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                                                       "files": manifest}, indent=2, sort_keys=True), encoding="utf-8")
+        v = self.verify_backup(name)
+        return {"name": name, "files": len(manifest), "verified": v["ok"]}
+
+    def backups(self) -> List[Dict[str, Any]]:
+        base = self.data / "backups"
+        out = []
+        for d in sorted(base.iterdir(), reverse=True) if base.is_dir() else []:
+            if d.is_dir() and self._BK.match(d.name) and (d / "manifest.json").exists():
+                m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+                out.append({"name": d.name, "created": m.get("created"), "files": len(m.get("files", {}))})
+        return out
+
+    def verify_backup(self, name: str) -> Dict[str, Any]:
+        if not self._BK.match(name or ""):
+            raise SiteError(["backup name: not valid"])
+        d = self.data / "backups" / name
+        if not (d / "manifest.json").exists():
+            raise SiteError(["%s: no such backup" % name], 404)
+        files = json.loads((d / "manifest.json").read_text(encoding="utf-8"))["files"]
+        bad = [r for r, sha in files.items() if not (d / r).is_file() or self._sha(d / r) != sha]
+        return {"name": name, "ok": not bad, "checked": len(files), "bad": bad}

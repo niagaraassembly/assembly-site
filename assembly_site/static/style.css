@@ -87,3 +87,8 @@ button.mini{padding:2px 9px;font-size:12px}button.on{background:var(--code);bord
 td.qt{min-width:220px}.bar{padding-top:6px}
 .card.inner{background:var(--bg);margin-top:12px}details{border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin:6px 0}summary{cursor:pointer}
 .btn.primary{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}.row .btn{white-space:nowrap}
+
+.badge{background:var(--bad);color:#fff;border-radius:99px;font-size:11px;padding:0 6px;margin-left:2px}
+.res pre{max-height:360px}.res h3{font-size:14px;margin:10px 0 4px}
+.sev{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mute);margin-right:6px}
+.sev.review{background:var(--warn)}.sev.failed,.sev.partial{background:var(--bad)}.sev.aging{background:var(--acc)}

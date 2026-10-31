@@ -70,6 +70,13 @@ def make_handler(svc: Service):
                     return self._json(200, svc.kinds())
                 if u.path == "/api/records":
                     return self._json(200, svc.records(q.get("kind"), q.get("status"), q.get("starred") == "1"))
+                if u.path == "/api/inbox":
+                    return self._json(200, svc.inbox())
+                if u.path == "/api/health":
+                    return self._json(200, svc.health())
+                m = re.fullmatch(r"/api/records/" + _ID + r"/result", u.path)
+                if m:
+                    return self._json(200, svc.result(m.group(1)))
                 if u.path == "/api/bundles":
                     return self._json(200, svc.bundles(_day(q.get("on"))))
                 if u.path == "/api/workbench":
@@ -128,12 +135,17 @@ def make_handler(svc: Service):
                     return self._json(200, svc.preview_new(kind, values))
                 if p == "/api/handback":
                     return self._json(200, svc.handback(bool(body.get("apply"))))
+                if p == "/api/backups":
+                    return self._json(201, svc.backup())
+                m = re.fullmatch(r"/api/backups/([0-9-]+)/verify", p)
+                if m:
+                    return self._json(200, svc.verify_backup(m.group(1)))
                 m = re.fullmatch(r"/api/bundles/(bk-[0-9a-f]{8})/dispatch", p)
                 if m:
                     return self._json(200, svc.bundle_dispatch(m.group(1), _day(body.get("on")), bool(body.get("apply")), body.get("ids")))
                 if p == "/api/notes":
                     return self._json(200, svc.post_note(str(body.get("target", "")), body))
-                m = re.fullmatch(r"/api/records/" + _ID + r"/(dispatch|set|retire|confirm)", p)
+                m = re.fullmatch(r"/api/records/" + _ID + r"/(dispatch|set|retire|confirm|resume|supersede)", p)
                 if m:
                     id, act = m.groups()
                     if act == "dispatch":
@@ -143,6 +155,10 @@ def make_handler(svc: Service):
                         return self._json(200, svc.set(id, ch, un) if body.get("apply") else svc.set_preview(id, ch, un))
                     if act == "retire":
                         return self._json(200, svc.retire(id, str(body.get("reason", "")), bool(body.get("apply"))))
+                    if act == "resume":
+                        return self._json(200, svc.resume(id))
+                    if act == "supersede":
+                        return self._json(200, svc.supersede(id, str(body.get("by", "")), bool(body.get("apply"))))
                     return self._json(200, svc.confirm(id))
             except SiteError as e:
                 return self._err(e.code, e.errors)

@@ -289,11 +289,38 @@ async function viewRecord(id, mode) {
       h("div", { class: "actions" }, h("button", { class: "danger", onclick: async () => { try { await api("/api/records/" + id + "/retire", { reason: reason.value, apply: true }); toast("Retired"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Retire"))));
   };
 
+  const resultPanel = h("div", { class: "res" });
+  const showResult = async () => {
+    try {
+      const r = await api("/api/records/" + id + "/result");
+      if (!r.result) return resultPanel.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Run result"), h("p", { class: "note small" }, r.runs_present ? "No machine-flows run carries " + id + " yet." : "No runs folder at " + r.runs + ". There is no result to read.")));
+      const x = r.result;
+      resultPanel.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Run result"),
+        h("p", { class: "small muted" }, "Run " + x.run_id + " \u00b7 " + x.status + " \u00b7 " + (x.machine || "?") + " via " + (x.tool || "?") + (x.older_runs ? " \u00b7 " + x.older_runs + " earlier run(s)" : "")),
+        Object.entries(x.files).map(([n, t]) => h("div", {}, h("h3", {}, n, x.truncated.includes(n) ? " (cut)" : ""), h("pre", {}, t))),
+        x.skipped.length ? h("p", { class: "small muted" }, "Not shown (binary or unreadable): " + x.skipped.join(", ")) : null));
+    } catch (e) { resultPanel.replaceChildren(errBox(e.errors || [e.message])); }
+  };
+  const supersedePanel = () => {
+    const by = h("input", { type: "text", placeholder: "replacement ID, e.g. " + id.split("-")[0] + "-0002" });
+    const out = h("div");
+    const go = async (apply) => {
+      try {
+        const r = await api("/api/records/" + id + "/supersede", { by: by.value.trim(), apply });
+        if (!apply) out.replaceChildren(h("p", { class: "note small" }, "This retires " + id + " and links " + r.by + " to it. " + id + " becomes read-only."), h("div", { class: "actions" }, h("button", { class: "danger", onclick: () => go(true) }, "Retire " + id + " and link " + r.by)));
+        else { toast("Superseded"); viewRecord(id); }
+      } catch (e) { out.replaceChildren(errBox(e.errors)); }
+    };
+    panel.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Replace " + id), h("p", { class: "muted small" }, "Use when a newer record takes over. Nothing is deleted."), by, h("div", { class: "actions" }, h("button", { onclick: () => go(false) }, "Preview"))), out);
+  };
   const dispatchable = kind.dispatchable && d.tasks.length > 0 && !retired;
   const actions = h("div", { class: "actions" },
     dispatchable ? h("button", { class: "primary", onclick: dispatchPanel }, rec.status === "new" ? "Review & dispatch" : "Dispatch again") : null,
     rec.status === "awaiting-confirmation" ? h("button", { class: "primary", onclick: async () => { try { await api("/api/records/" + id + "/confirm", {}); toast("Marked answered"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Confirm answered") : null,
+    d.creation && d.creation.state === "partial" ? h("button", { class: "primary", onclick: async () => { try { await api("/api/records/" + id + "/resume", {}); toast("Creation resumed"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Resume creation") : null,
+    d.record.status !== "new" || kind.dispatchable ? h("button", { onclick: showResult }, "Show run result") : null,
     !retired ? h("button", { onclick: editPanel }, "Edit metadata") : null,
+    !retired ? h("button", { onclick: supersedePanel }, "Replace with…") : null,
     !retired ? h("button", { class: "danger", onclick: retirePanel }, "Retire") : null);
 
   show(
@@ -302,7 +329,7 @@ async function viewRecord(id, mode) {
     h("p", { class: "muted small" }, rec.kind + " · rev " + (rec.rev || 0) + " · created " + when(rec.created)),
     rec.status === "awaiting-confirmation" ? h("p", { class: "note" }, "machine-flows reports this run as done. Read the result, then confirm; only you mark a question answered.") : null,
     rec.status === "dispatched" ? h("p", { class: "note small" }, "A task document was written. It stays dispatched until a machine-flows run record says otherwise (use Check runs on the Dispatch page).") : null,
-    actions, panel,
+    actions, panel, resultPanel,
     h("div", { class: "grid" },
       h("section", { class: "card" }, h("h2", {}, "Fields"), h("dl", { class: "kv" },
         Object.entries(rec.fields).sort().flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, Array.isArray(v) ? v.join(", ") : String(v))]))),
@@ -311,6 +338,33 @@ async function viewRecord(id, mode) {
       h("section", { class: "card" }, h("h2", {}, "Notes"), notesPanel(id)),
       d.creation ? h("section", { class: "card" }, h("h2", {}, "Creation steps"), d.creation.steps.map((s) => h("div", { class: "small" }, h("b", {}, s.id), " — ", s.status, s.detail ? h("div", { class: "muted" }, s.detail) : null))) : null));
   if (mode === "dispatch" && dispatchable) dispatchPanel();
+  if (rec.status === "awaiting-confirmation") showResult();      // read the result before confirming
+}
+
+// ---------- inbox and health
+const KIND_LABEL = { review: "Review", failed: "Failed", partial: "Resume", aging: "Aging", flagged: "Flagged" };
+async function viewInbox() {
+  const d = await api("/api/inbox");
+  show(h("h1", {}, "Inbox"), h("p", { class: "muted" }, "Everything that wants you, most pressing first: finished runs to confirm, failures, partial creations, dispatches with no change for days, and flagged items."),
+    h("section", { class: "card" }, d.items.length ? d.items.map((i) => h("div", { class: "row" },
+      h("div", { class: "t" }, h("span", { class: "sev " + i.kind }), h("b", {}, KIND_LABEL[i.kind]), " ", h("a", { href: i.route }, i.id), h("div", { class: "small" }, i.title), h("div", { class: "small muted" }, i.detail)),
+      h("a", { class: "btn" + (i.kind === "review" ? " primary" : ""), href: i.route }, "Open"))) : h("p", { class: "muted" }, "Inbox is clear.")));
+}
+
+async function viewHealth() {
+  const d = await api("/api/health");
+  const out = h("div");
+  const verify = async (name) => { try { const r = await api("/api/backups/" + name + "/verify", {}); toast(r.ok ? "Backup verified (" + r.checked + " files)" : "CHECKSUM MISMATCH: " + r.bad.join(", ")); } catch (e) { toast(e.message); } };
+  show(h("h1", {}, "Health"),
+    h("section", { class: "card" }, h("h2", {}, "Record checks"), d.errors.length || d.warnings.length ? [d.errors.map((e) => h("p", { class: "err" }, e)), d.warnings.map((w) => h("p", { class: "note small" }, w))] : h("p", { class: "muted" }, "All records pass the core's lint.")),
+    h("section", { class: "card" }, h("h2", {}, "Backups"), h("p", { class: "small muted" }, "Copies records, creations, ID counters and notes into " + d.data + "/backups with a checksum manifest, then verifies the copy. Take one before moving the data root."),
+      h("div", { class: "actions" }, h("button", { class: "primary", onclick: async () => { try { const r = await api("/api/backups", {}); toast("Backed up " + r.files + " files" + (r.verified ? " (verified)" : " (VERIFY FAILED)")); viewHealth(); } catch (e) { out.replaceChildren(errBox(e.errors)); } } }, "Back up now")), out,
+      d.backups.length ? d.backups.map((b) => h("div", { class: "row" }, h("div", { class: "t" }, h("b", {}, b.name), h("div", { class: "small muted" }, b.files + " files")), h("button", { onclick: () => verify(b.name) }, "Verify"))) : h("p", { class: "muted small" }, "No backups yet.")),
+    h("section", { class: "card" }, h("h2", {}, "Locations"), h("dl", { class: "kv" }, h("dt", {}, "Records"), h("dd", {}, d.root), h("dt", {}, "Site data"), h("dd", {}, d.data))));
+}
+
+async function refreshBadge() {
+  try { const d = await api("/api/inbox"); const b = $("#badge"); b.textContent = d.count; b.hidden = !d.count; } catch (e) { /* offline */ }
 }
 
 // ---------- router
@@ -320,12 +374,15 @@ async function route() {
   const params = new URLSearchParams(qs || "");
   const cur = path === "/" || path.startsWith("/stage") ? "map" : path.startsWith("/r/") ? "records" : path.slice(1);
   document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("on", a.dataset.r === cur));
+  refreshBadge();
   try {
     let m;
     if (path === "/") await viewMap();
     else if (path === "/dispatch") await viewDispatch();
     else if (path === "/bundles") await viewBundles(params);
     else if (path === "/activity") await viewActivity();
+    else if (path === "/inbox") await viewInbox();
+    else if (path === "/health") await viewHealth();
     else if ((m = path.match(/^\/stage\/([a-z0-9]+)$/))) await viewStage(m[1]);
     else if (path === "/new") await viewNew(params);
     else if (path === "/records") await viewRecords(params);
