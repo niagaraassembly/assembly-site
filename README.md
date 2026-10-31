@@ -50,6 +50,11 @@ machine-flows), `ASSEMBLY_RUNS` (machine-flows run records, read-only).
 
 Browser test: `tests/e2e` runs when Node and Playwright are installed (skipped otherwise).
 
+- **Operations**: `GET /healthz`; `bin/assembly-site --log` prints one line per request (method, path without query, status, ms); the Health page shows
+  versions, resolved paths and why each stage reads built or not. Changes are refused when made from a stale page (HTTP 409, with a reload button).
+
+**What is not done: see [docs/UNFINISHED.md](docs/UNFINISHED.md).**
+
 ## Safety
 
 Binds to 127.0.0.1 only; rejects non-local `Host` headers; writes need a JSON content type and `X-Assembly-Site` header; strict CSP and
