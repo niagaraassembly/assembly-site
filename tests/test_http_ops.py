@@ -28,3 +28,13 @@ class HttpOpsTest(HttpBase, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HttpStaleTest(HttpBase, unittest.TestCase):
+    def test_stale_rev_is_409_over_http(self):
+        id = self.call("/api/captures", {"kind": "question", "fields": Q, "apply": True})[1]["record"]["id"]
+        self.assertEqual(self.call("/api/records/%s/set" % id, {"set": {"region": "A"}, "apply": True, "rev": 0})[0], 200)
+        code, e = self.call("/api/records/%s/set" % id, {"set": {"region": "B"}, "apply": True, "rev": 0})
+        self.assertEqual(code, 409)
+        self.assertIn("changed since", e["errors"][0])
+        self.assertEqual(self.call("/api/records/%s/retire" % id, {"reason": "x", "apply": True, "rev": 0})[0], 409)

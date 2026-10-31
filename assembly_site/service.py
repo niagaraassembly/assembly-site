@@ -20,7 +20,7 @@ import hashlib
 import shutil
 
 from .core import lint as lint_mod
-from .core import KINDS, bundle as bundlelib, change, create, handback, handoff, records
+from .core import actions, KINDS, bundle as bundlelib, change, create, handback, handoff, records
 
 # Fields the site never lets a person edit directly (provenance and links managed by actions).
 EDIT_LOCKED = {"supersedes"}
@@ -240,28 +240,14 @@ class Service:
         return {"id": id, "tasks": tasks, "outbox": str(self.outbox), "errors": bad,
                 "meaning": "Applying writes the task document to the outbox for machine-flows. It does not run it."}
 
-    def dispatch(self, id: str) -> Dict[str, Any]:
+    def dispatch(self, id: str, expected_rev: Any = None) -> Dict[str, Any]:
         h = self.notes_store.view(id)["hold"]
         if h and self._load(id)["status"] == "new":
             raise SiteError(["%s is held by %s%s. Release the hold first." % (id, h["actor"], ": " + h["reason"] if h["reason"] else "")])
         prev = self.dispatch_preview(id)
         if prev["errors"]:
             raise SiteError(prev["errors"])
-        rec = self._load(id)
-        c = self._creation(id)
-        if c and any(s["status"] == "held" for s in c["steps"]):
-            c2 = create.release_held(self.root, KINDS, id, self.outbox)
-            bad = [st["detail"] for st in c2["steps"] if st["status"] in ("failed", "pending")]
-            if bad:
-                raise SiteError(["task document was not written (%s). The record stays a draft you can resume." % "; ".join(bad)])
-        else:
-            kind, steps = self._steps(rec)
-            for s in steps:
-                handoff.emit_for_step(self.root, rec, kind, s, self.outbox)
-            if rec["status"] == "new":
-                rec["status"] = "dispatched"
-                records.add_event(rec, "dispatched", "dispatch from site")
-                records.save(self.root, rec)
+        self._guard(lambda: actions.dispatch_record(self.root, KINDS, id, self.outbox, actor="dispatch from site", expected_rev=expected_rev))
         return self.record(id)
 
     # ---- changes (core actions)
@@ -269,10 +255,11 @@ class Service:
         try:
             return fn()
         except change.ChangeError as e:
-            raise SiteError(e.errors)
+            raise SiteError(e.errors, 409 if any("changed since" in x for x in e.errors) else 400)
 
-    def set_preview(self, id: str, changes: Dict[str, Any], unset: List[str]) -> Dict[str, Any]:
+    def set_preview(self, id: str, changes: Dict[str, Any], unset: List[str], expected_rev: Any = None) -> Dict[str, Any]:
         rec = self._load(id)
+        self._guard(lambda: change.expect_rev(rec, expected_rev))
         locked = [k for k in list(changes) + list(unset) if k in EDIT_LOCKED]
         if locked:
             raise SiteError(["%s: not editable here" % k for k in locked])
@@ -282,26 +269,22 @@ class Service:
         return {"id": id, "diff": plan["diff"], "rev": plan["rev"],
                 "redispatch": bool(plan["diff"]) and rec["status"] != "new" and bool(self._steps(rec)[1])}
 
-    def set(self, id: str, changes: Dict[str, Any], unset: List[str], actor: str = "owner (site)") -> Dict[str, Any]:
-        self.set_preview(id, changes, unset)
-        self._guard(lambda: change.apply_set(self.root, KINDS, id, changes, unset, actor=actor))
+    def set(self, id: str, changes: Dict[str, Any], unset: List[str], actor: str = "owner (site)", expected_rev: Any = None) -> Dict[str, Any]:
+        self.set_preview(id, changes, unset, expected_rev)
+        self._guard(lambda: change.apply_set(self.root, KINDS, id, changes, unset, actor=actor, expected_rev=expected_rev))
         return self.record(id)
 
-    def retire(self, id: str, reason: str, apply: bool, actor: str = "owner (site)") -> Dict[str, Any]:
+    def retire(self, id: str, reason: str, apply: bool, actor: str = "owner (site)", expected_rev: Any = None) -> Dict[str, Any]:
         if not reason.strip():
             raise SiteError(["reason: required"])
         self._guard(lambda: change.check_retire(self.root, KINDS, id))
         if apply:
-            self._guard(lambda: change.retire(self.root, KINDS, id, reason, actor=actor))
+            self._guard(lambda: change.retire(self.root, KINDS, id, reason, actor=actor, expected_rev=expected_rev))
         return self.record(id) if apply else {"id": id, "would": "retire", "reason": reason}
 
-    def confirm(self, id: str) -> Dict[str, Any]:
-        rec = self._load(id)
-        if rec["status"] != "awaiting-confirmation":
-            raise SiteError(["%s is %s, not awaiting-confirmation; only the owner confirms a finished run" % (id, rec["status"])])
-        rec["status"] = "answered"
-        records.add_event(rec, "confirmed", "owner (site)")
-        records.save(self.root, rec)
+    def confirm(self, id: str, expected_rev: Any = None) -> Dict[str, Any]:
+        self._load(id)
+        self._guard(lambda: actions.confirm_record(self.root, KINDS, id, actor="owner (site)", expected_rev=expected_rev))
         return self.record(id)
 
     # ---- handback (reads machine-flows run records)
@@ -616,11 +599,12 @@ class Service:
         except (create.CreationError, OSError, ValueError) as e:
             raise SiteError([str(e)])
 
-    def supersede(self, old: str, by: str, apply: bool, actor: str = "owner (site)") -> Dict[str, Any]:
+    def supersede(self, old: str, by: str, apply: bool, actor: str = "owner (site)", expected_rev: Any = None) -> Dict[str, Any]:
         self._guard(lambda: change.check_supersede(self.root, KINDS, old, by))
+        self._guard(lambda: change.expect_rev(self._load(old), expected_rev))
         if not apply:
             return {"would": "supersede", "old": old, "by": by}
-        self._guard(lambda: change.supersede(self.root, KINDS, old, by, actor=actor))
+        self._guard(lambda: change.supersede(self.root, KINDS, old, by, actor=actor, expected_rev=expected_rev))
         return self.record(old)
 
     # ---- health and backups

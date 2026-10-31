@@ -33,7 +33,8 @@ const diffView = (d) => d === null || d === undefined ? null
 
 let toastT;
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
-const errBox = (errs) => h("ul", { class: "err" }, errs.map((e) => h("li", {}, e)));
+const errBox = (errs) => h("div", {}, h("ul", { class: "err" }, errs.map((e) => h("li", {}, e))),
+  errs.some((e) => e.includes("changed since you loaded")) ? h("button", { class: "mini", onclick: () => route() }, "Reload this page") : null);
 const pill = (s) => h("span", { class: "pill " + s }, s);
 const marks = (r) => [r.starred ? h("span", { class: "mark on", title: "starred" }, "\u2605") : null, r.flagged ? h("span", { class: "mark on", title: "flagged" }, "\u2691") : null, r.notes ? h("span", { class: "mark", title: "comments" }, "\u{1F4AC}" + r.notes) : null];
 const when = (iso) => (iso || "").replace("T", " ").slice(0, 16);
@@ -320,7 +321,7 @@ async function viewRecords(params) {
 // ---------- record detail
 async function viewRecord(id, mode) {
   const [d, ks] = await Promise.all([api("/api/records/" + id), kinds()]);
-  const rec = d.record, kind = ks.find((k) => k.name === rec.kind);
+  const rec = d.record, kind = ks.find((k) => k.name === rec.kind), rev = rec.rev || 0;   // sent with every change so a stale page is refused
   const retired = rec.status === "retired";
   const panel = h("div", { id: "panel" });
 
@@ -328,7 +329,7 @@ async function viewRecord(id, mode) {
     try {
       const p = await api("/api/records/" + id + "/dispatch");
       const ok = h("input", { type: "checkbox", id: "ok" });
-      const go = h("button", { class: "primary", disabled: true, onclick: async () => { try { await api("/api/records/" + id + "/dispatch", { apply: true }); toast("Task document written"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Write to outbox");
+      const go = h("button", { class: "primary", disabled: true, onclick: async () => { try { await api("/api/records/" + id + "/dispatch", { apply: true, rev }); toast("Task document written"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Write to outbox");
       ok.addEventListener("change", () => (go.disabled = !ok.checked));
       panel.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Dispatch preview"), h("p", { class: "muted small" }, p.meaning),
         p.tasks.map((t) => h("div", {}, h("p", { class: "small" }, "File: ", h("code", {}, t.file), t.written ? " (already in outbox; identical rewrite is a no-op)" : ""), diffView(t.diff), h("details", {}, h("summary", {}, "Full task document"), h("pre", {}, t.markdown)))),
@@ -351,7 +352,7 @@ async function viewRecord(id, mode) {
     };
     const preview = async () => {
       try {
-        const c = collect(), p = await api("/api/records/" + id + "/set", c);
+        const c = { ...collect(), rev }, p = await api("/api/records/" + id + "/set", c);
         if (!p.diff.length) return out.replaceChildren(h("p", { class: "muted" }, "No changes."));
         out.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Changes"), h("dl", { class: "kv" }, p.diff.flatMap((x) => [h("dt", {}, x.field), h("dd", {}, (x.old == null ? "(unset)" : String(x.old)) + " → " + (x.new == null ? "(unset)" : String(x.new)))])),
           p.redispatch ? h("p", { class: "note small" }, "This record was dispatched. After saving, dispatch again to write a revised task document beside the earlier one.") : null,
@@ -365,7 +366,7 @@ async function viewRecord(id, mode) {
   const retirePanel = () => {
     const reason = h("input", { type: "text", placeholder: "reason" });
     panel.replaceChildren(h("div", { class: "card" }, h("h2", {}, "Retire " + id), h("p", { class: "muted small" }, "Nothing is deleted. A retired record is read-only and is never dispatched."), reason,
-      h("div", { class: "actions" }, h("button", { class: "danger", onclick: async () => { try { await api("/api/records/" + id + "/retire", { reason: reason.value, apply: true }); toast("Retired"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Retire"))));
+      h("div", { class: "actions" }, h("button", { class: "danger", onclick: async () => { try { await api("/api/records/" + id + "/retire", { reason: reason.value, apply: true, rev }); toast("Retired"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Retire"))));
   };
 
   const resultPanel = h("div", { class: "res" });
@@ -385,7 +386,7 @@ async function viewRecord(id, mode) {
     const out = h("div");
     const go = async (apply) => {
       try {
-        const r = await api("/api/records/" + id + "/supersede", { by: by.value.trim(), apply });
+        const r = await api("/api/records/" + id + "/supersede", { by: by.value.trim(), apply, rev });
         if (!apply) out.replaceChildren(h("p", { class: "note small" }, "This retires " + id + " and links " + r.by + " to it. " + id + " becomes read-only."), h("div", { class: "actions" }, h("button", { class: "danger", onclick: () => go(true) }, "Retire " + id + " and link " + r.by)));
         else { toast("Superseded"); viewRecord(id); }
       } catch (e) { out.replaceChildren(errBox(e.errors)); }
@@ -395,7 +396,7 @@ async function viewRecord(id, mode) {
   const dispatchable = kind.dispatchable && d.tasks.length > 0 && !retired;
   const actions = h("div", { class: "actions" },
     dispatchable ? h("button", { class: "primary", onclick: dispatchPanel }, rec.status === "new" ? "Review & dispatch" : "Dispatch again") : null,
-    rec.status === "awaiting-confirmation" ? h("button", { class: "primary", onclick: async () => { try { await api("/api/records/" + id + "/confirm", {}); toast("Marked answered"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Confirm answered") : null,
+    rec.status === "awaiting-confirmation" ? h("button", { class: "primary", onclick: async () => { try { await api("/api/records/" + id + "/confirm", { rev }); toast("Marked answered"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Confirm answered") : null,
     d.creation && d.creation.state === "partial" ? h("button", { class: "primary", onclick: async () => { try { await api("/api/records/" + id + "/resume", {}); toast("Creation resumed"); viewRecord(id); } catch (e) { panel.prepend(errBox(e.errors)); } } }, "Resume creation") : null,
     d.record.status !== "new" || kind.dispatchable ? h("button", { onclick: showResult }, "Show run result") : null,
     !retired ? h("button", { onclick: editPanel }, "Edit metadata") : null,

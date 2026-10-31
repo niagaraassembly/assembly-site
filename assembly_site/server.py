@@ -172,18 +172,19 @@ def make_handler(svc: Service):
                 m = re.fullmatch(r"/api/records/" + _ID + r"/(dispatch|set|retire|confirm|resume|supersede)", p)
                 if m:
                     id, act = m.groups()
+                    rev = body.get("rev")
                     if act == "dispatch":
-                        return self._json(200, svc.dispatch(id) if body.get("apply") else svc.dispatch_preview(id))
+                        return self._json(200, svc.dispatch(id, rev) if body.get("apply") else svc.dispatch_preview(id))
                     if act == "set":
                         ch, un = body.get("set") or {}, body.get("unset") or []
-                        return self._json(200, svc.set(id, ch, un) if body.get("apply") else svc.set_preview(id, ch, un))
+                        return self._json(200, svc.set(id, ch, un, expected_rev=rev) if body.get("apply") else svc.set_preview(id, ch, un, rev))
                     if act == "retire":
-                        return self._json(200, svc.retire(id, str(body.get("reason", "")), bool(body.get("apply"))))
+                        return self._json(200, svc.retire(id, str(body.get("reason", "")), bool(body.get("apply")), expected_rev=rev))
                     if act == "resume":
                         return self._json(200, svc.resume(id))
                     if act == "supersede":
-                        return self._json(200, svc.supersede(id, str(body.get("by", "")), bool(body.get("apply"))))
-                    return self._json(200, svc.confirm(id))
+                        return self._json(200, svc.supersede(id, str(body.get("by", "")), bool(body.get("apply")), expected_rev=rev))
+                    return self._json(200, svc.confirm(id, rev))
             except SiteError as e:
                 return self._err(e.code, e.errors)
             return self._err(404, "not found")
