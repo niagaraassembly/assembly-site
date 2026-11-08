@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="__ASSEMBLY_CSRF__"><meta name="color-scheme" content="light">
+  <title>Questions · Assembly</title><link rel="stylesheet" href="/styles.css"><script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to questions</a>
+  <header class="site-header"><div class="brand" aria-label="Niagara Assembly"><span class="brand-mark" aria-hidden="true">a</span><span>assembly<span class="brand-period">.</span></span></div><span class="header-divider" aria-hidden="true"></span><span class="system-name">Company system</span><span class="workspace-indicator"><span aria-hidden="true"></span>Local workspace</span></header>
+  <main id="main" class="workspace">
+    <section class="page-heading" aria-labelledby="page-title"><div><p class="eyebrow">The question comes first</p><h1 id="page-title">Questions</h1><p class="page-description">A place to keep the original thought, and see what grows from it.</p></div><button id="new-question" class="button button-primary" type="button"><span aria-hidden="true">+</span> Add a question</button></section>
+    <p id="workspace-status" class="workspace-status" role="status" aria-live="polite"></p>
+    <section class="questions-section" aria-labelledby="saved-heading">
+      <div class="section-heading"><div class="section-title"><h2 id="saved-heading">Saved questions</h2><span id="question-count" class="count-badge" aria-label="Number of saved questions">0</span></div><p>Originals, context, and connections.</p></div>
+      <div id="load-error" class="notice notice-error" role="alert" hidden><p id="load-error-text"></p><button id="retry-load" class="button button-small button-secondary" type="button">Try again</button></div>
+      <div id="loading-state" class="loading-state" role="status">Loading questions…</div>
+      <div id="empty-state" class="empty-state" hidden><span class="empty-mark" aria-hidden="true">?</span><h3>What’s on your mind?</h3><p>Save a question, a rough thought, or a whole pasted block.<br>The original wording stays with it.</p><button id="empty-add" class="button button-secondary" type="button">Add your first question</button></div>
+      <div id="table-wrapper" class="table-wrapper" hidden><table class="questions-table"><caption class="visually-hidden">Saved questions. Open a question to read its full original text, or expand its metadata.</caption><colgroup><col class="question-column"><col class="scope-column"><col class="status-column"><col class="added-column"><col class="expand-column"></colgroup><thead><tr><th scope="col">Question</th><th scope="col">Labels / scope</th><th scope="col">Status</th><th scope="col">Added / ID</th><th scope="col"><span class="visually-hidden">Metadata</span></th></tr></thead><tbody id="question-rows"></tbody></table></div>
+      <div class="table-footer"><span id="table-summary">Questions are saved when you choose Save question.</span><span>Niagara Assembly</span></div>
+    </section>
+  </main>
+  <dialog id="capture-dialog" class="capture-dialog" aria-labelledby="capture-heading">
+    <div class="dialog-header"><div><p class="eyebrow">Keep the original</p><h2 id="capture-heading">Capture a question</h2></div><button id="capture-close" class="icon-button" type="button" aria-label="Close capture form">×</button></div>
+    <form id="question-form" novalidate><div class="capture-body">
+      <p class="dialog-description">Write it as it comes, or paste the full block. You can add labels later.</p>
+      <div id="capture-source" class="source-notice" hidden><span id="capture-source-text"></span><button id="remove-source" class="text-button" type="button">Remove link</button></div>
+      <div class="form-field"><label for="question-title">Title <span class="optional">Optional</span></label><input id="question-title" name="title" type="text" autocomplete="off" placeholder="A short name to find it again"></div>
+      <div class="form-field"><label for="question-text">Original question</label><textarea id="question-text" name="text" rows="10" required placeholder="What are you thinking about?" aria-describedby="question-help capture-error"></textarea><p id="question-help" class="field-help">Your original text is kept, including line breaks.</p></div>
+      <p id="capture-error" class="form-error" role="alert" hidden></p>
+    </div><div class="dialog-footer"><span class="save-note" id="capture-save-note">Ready when you are.</span><div class="button-group"><button id="capture-cancel" class="button button-secondary" type="button">Close</button><button id="save-question" class="button button-primary" type="submit">Save question</button></div></div></form>
+  </dialog>
+  <dialog id="reader-dialog" class="reader-dialog" aria-labelledby="reader-heading">
+    <div class="dialog-header"><div><p id="reader-id" class="eyebrow"></p><h2 id="reader-heading" tabindex="-1"></h2></div><button id="reader-close" class="icon-button" type="button" aria-label="Close question">×</button></div>
+    <div class="reader-body" tabindex="0" role="region" aria-label="Full original question and context"><p id="reader-error" class="form-error" role="alert" hidden></p><div id="reader-meta" class="reader-meta"></div><h3 class="original-label">Original question</h3><div id="reader-text" class="original-text"></div><div id="reader-lineage" class="reader-lineage" hidden></div></div>
+    <div class="dialog-footer"><span class="save-note">The original stays intact.</span><button id="add-linked" class="button button-primary" type="button">Add linked question <span aria-hidden="true">↗</span></button></div>
+  </dialog>
+</body>
+</html>
